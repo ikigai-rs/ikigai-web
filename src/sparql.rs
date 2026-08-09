@@ -398,10 +398,7 @@ async fn editor_page(kernel: &Kernel, query: Option<&str>) -> Resp {
     }
     // A real prefill, not a placeholder: ghost text looks like a default query
     // but submits nothing, so "Run" on a fresh page silently returned no rows.
-    let query_text = match query {
-        Some(q) => q,
-        None => "SELECT ?s ?p ?o WHERE { ?s ?p ?o } LIMIT 10",
-    };
+    let query_text = query.unwrap_or("SELECT ?s ?p ?o WHERE { ?s ?p ?o } LIMIT 10");
     // The HTML parser eats one newline right after <textarea>; re-add it so a
     // query that genuinely starts with a blank line survives the round trip.
     let textarea = if query_text.starts_with('\n') {
