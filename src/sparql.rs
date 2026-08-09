@@ -396,7 +396,12 @@ async fn editor_page(kernel: &Kernel, query: Option<&str>) -> Resp {
             html_escape(sample.blurb),
         ));
     }
-    let query_text = query.unwrap_or("");
+    // A real prefill, not a placeholder: ghost text looks like a default query
+    // but submits nothing, so "Run" on a fresh page silently returned no rows.
+    let query_text = match query {
+        Some(q) => q,
+        None => "SELECT ?s ?p ?o WHERE { ?s ?p ?o } LIMIT 10",
+    };
     // The HTML parser eats one newline right after <textarea>; re-add it so a
     // query that genuinely starts with a blank line survives the round trip.
     let textarea = if query_text.starts_with('\n') {
@@ -424,8 +429,7 @@ async fn editor_page(kernel: &Kernel, query: Option<&str>) -> Resp {
          <div class=\"layout\">\
          <main><form method=\"GET\" action=\"/sparql\">\
          <div class=\"editor\"><pre id=\"hl\" aria-hidden=\"true\"></pre>\
-         <textarea id=\"q\" name=\"query\" spellcheck=\"false\" \
-         placeholder=\"SELECT ?s ?p ?o WHERE {{ ?s ?p ?o }} LIMIT 10\">{textarea}</textarea></div>\
+         <textarea id=\"q\" name=\"query\" spellcheck=\"false\">{textarea}</textarea></div>\
          <div class=\"run\"><button type=\"submit\">Run</button>\
          <span class=\"hint\">\u{2318}\u{23ce}</span>{faces}</div>\
          </form>{results}</main>\
