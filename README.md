@@ -32,7 +32,16 @@ peercred-authenticated local client — exactly what it grants the CLI.
 | `GET /{uri}` | `Source` — query args pass through as invocation args (`?annotations=include`) |
 | `HEAD /{uri}` | `Exists` — 200 (no body) on `true`, 404 on `false` |
 | `POST /urn:annotation[:{id}]` | `Sink` — the one write route v1 exposes (annotation minting for the browse overlay) |
+| `GET /` | index: browsable repos (via `urn:repo:list`) + the kernel catalog |
+| `GET /browse/{uri}` | the htmx shell page hosting the browse family's HTML faces |
+| `GET /k/source <iri> [k=v ...]` | the host adapter the faces' `hx-get` affordances target |
+| `POST /k/sink urn:annotation…` | the faces' `hx-post` (form fields → args; same single write route) |
 | anything else | 405 + `Allow` |
+
+Open `http://127.0.0.1:8642/` in a browser and click into a repo: tree →
+directories → file faces with syntax highlighting, all htmx swaps through
+`/k/source`. htmx is vendored (`assets/htmx.min.js`, same-origin, no CDN — the
+`ikigai-cms-web` posture).
 
 **Conneg:** the `Accept` header selects the face via the `as=` argument —
 `text/html` → HTML (a browser's default Accept gets HTML), `text/turtle`,
