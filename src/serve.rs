@@ -21,21 +21,56 @@ const MAX_BODY: usize = 1024 * 1024;
 /// How long a connection may take to deliver its request.
 const READ_BUDGET: Duration = Duration::from_secs(30);
 
-/// Bind the loopback listener. Separate from [`serve`] so a caller (and the
-/// tests) can learn the bound address BEFORE requests race the accept loop.
-/// The address is always `127.0.0.1` — the v1 trust model is the local owner;
-/// see the crate doc.
-pub async fn bind(port: u16) -> std::io::Result<TcpListener> {
-    TcpListener::bind(("127.0.0.1", port)).await
+/// What the bind address implies about who is on the other end — and therefore
+/// which surface this face offers.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Posture {
+    /// Loopback bind: the local owner (the same trust the dev socket's
+    /// peer-credential check extends). The full v1 surface, including the one
+    /// write route (annotation minting).
+    LocalOwner,
+    /// Non-loopback bind: anyone on the network. The write surface is GONE,
+    /// not gated — every request that is not GET/HEAD is refused before
+    /// dispatch, except `POST /sparql`, whose body is a QUERY (that face is
+    /// read-only by its own construction; see [`crate::sparql`]).
+    ReadOnly,
+}
+
+impl Posture {
+    /// The posture the listener's ACTUAL bound address earns. Derived from the
+    /// socket, not the config string — the config is intent, the socket is
+    /// truth.
+    pub fn of(listener: &TcpListener) -> std::io::Result<Posture> {
+        Ok(if listener.local_addr()?.ip().is_loopback() {
+            Posture::LocalOwner
+        } else {
+            Posture::ReadOnly
+        })
+    }
+}
+
+/// Bind the listener. Separate from [`serve`] so a caller (and the tests) can
+/// learn the bound address BEFORE requests race the accept loop. The default
+/// address is loopback; a non-loopback address puts [`serve`] in
+/// [`Posture::ReadOnly`] — see the crate doc's trust posture.
+pub async fn bind(addr: std::net::SocketAddr) -> std::io::Result<TcpListener> {
+    TcpListener::bind(addr).await
 }
 
 /// Accept forever, one task per connection.
+///
+/// The posture is derived HERE, from the listener itself — not passed in — so
+/// a non-loopback listener with a live write surface cannot be constructed:
+/// there is no parameter to get wrong. If the socket cannot even report its
+/// address, the server refuses to start rather than guess.
 pub async fn serve(kernel: Arc<Kernel>, listener: TcpListener) -> ! {
+    let posture = Posture::of(&listener)
+        .expect("refusing to serve: cannot read the bound address to derive the trust posture");
     loop {
         if let Ok((stream, _peer)) = listener.accept().await {
             let kernel = Arc::clone(&kernel);
             tokio::spawn(async move {
-                let _ = handle(kernel, stream).await;
+                let _ = handle(kernel, stream, posture).await;
             });
         }
     }
@@ -43,10 +78,14 @@ pub async fn serve(kernel: Arc<Kernel>, listener: TcpListener) -> ! {
 
 /// One connection: read a request (bounded, within a time budget), respond,
 /// close.
-async fn handle(kernel: Arc<Kernel>, mut stream: TcpStream) -> std::io::Result<()> {
+async fn handle(
+    kernel: Arc<Kernel>,
+    mut stream: TcpStream,
+    posture: Posture,
+) -> std::io::Result<()> {
     let parsed = tokio::time::timeout(READ_BUDGET, read_request(&mut stream)).await;
     let resp = match parsed {
-        Ok(Ok(req)) => respond(&kernel, req).await,
+        Ok(Ok(req)) => respond(&kernel, req, posture).await,
         Ok(Err(status)) => error_resp(status, "malformed request"),
         Err(_elapsed) => error_resp(408, "request read timed out"),
     };
@@ -256,7 +295,25 @@ fn post_allowed(uri: &str) -> bool {
 }
 
 /// Dispatch one parsed request against the kernel.
-async fn respond(kernel: &Kernel, req: HttpRequest) -> Resp {
+async fn respond(kernel: &Kernel, req: HttpRequest, posture: Posture) -> Resp {
+    // The read-only gate — ONE choke point, before any route parsing, so no
+    // later route (today's or a future one) can widen the surface by
+    // forgetting a check. `POST /sparql` passes: its body is a query, and that
+    // face rejects update forms itself before the kernel ever sees them.
+    if posture == Posture::ReadOnly
+        && req.method != "GET"
+        && req.method != "HEAD"
+        && !(req.method == "POST" && req.path == "/sparql")
+    {
+        let mut resp = error_resp(
+            403,
+            "read-only: this server is bound beyond loopback, so the write surface \
+             is disabled (GET/HEAD, plus /sparql queries)",
+        );
+        resp.headers
+            .push(("Allow".to_string(), "GET, HEAD".to_string()));
+        return resp;
+    }
     if req.path == "/" {
         return index(kernel).await;
     }
@@ -270,7 +327,7 @@ async fn respond(kernel: &Kernel, req: HttpRequest) -> Resp {
         return k_command(kernel, &req, command.to_string()).await;
     }
     if let Some(start) = req.path.strip_prefix("/browse/") {
-        return browse_shell(start);
+        return browse_shell(start, posture);
     }
     let uri = &req.path[1..]; // drop the leading `/`
     let Ok(target) = Iri::parse(uri.to_string()) else {
@@ -511,17 +568,27 @@ fn htmx_js() -> Resp {
 /// shell that loads htmx, styles the `browse-*` classes, and `hx-get`s the
 /// starting resource into `#browse` on load. Everything after the first paint
 /// is the faces' own affordances through the `/k/` adapter.
-fn browse_shell(start: &str) -> Resp {
+fn browse_shell(start: &str, posture: Posture) -> Resp {
     if Iri::parse(start.to_string()).is_err() || !start.starts_with("urn:") {
         return error_resp(404, &format!("`{start}` is not a browsable urn:* IRI"));
     }
+    // Read-only: don't OFFER the annotate form the gate would 403. The form
+    // markup comes from the mounted peer's faces, which have no adapter-level
+    // flag to omit it (`chrome=embed` strips crumbs only) — so the shell,
+    // whose job is dressing the faces, undresses this one affordance. The
+    // ENFORCEMENT is the gate in [`respond`]; this is honesty of presentation,
+    // not the security boundary.
+    let readonly_css = match posture {
+        Posture::ReadOnly => ".browse-annotate{display:none}",
+        Posture::LocalOwner => "",
+    };
     let start = html_escape(start);
     let body = format!(
         "<!doctype html><html><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
          <title>{start}</title>\
          <script src=\"/htmx.min.js\"></script>\
-         <style>{BROWSE_CSS}</style></head><body>\
+         <style>{BROWSE_CSS}{readonly_css}</style></head><body>\
          <main id=\"browse\" hx-get=\"/k/source {start} as=text/html\" \
          hx-trigger=\"load\" hx-swap=\"innerHTML\">loading {start}…</main>\
          </body></html>\n"

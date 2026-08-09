@@ -128,29 +128,46 @@ fn test_kernel() -> Kernel {
     ])))
 }
 
-/// One server for the whole test binary, on an OS-assigned port.
+/// Spawn a server on an OS-assigned port at `bind_ip`; return where it landed.
+fn spawn(bind_ip: &str) -> std::net::SocketAddr {
+    let addr: std::net::SocketAddr = format!("{bind_ip}:0").parse().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let listener = ikigai_web::serve::bind(addr).await.unwrap();
+            tx.send(listener.local_addr().unwrap()).unwrap();
+            ikigai_web::serve::serve(Arc::new(test_kernel()), listener).await
+        })
+    });
+    rx.recv().unwrap()
+}
+
+/// One loopback server for the whole test binary — the LocalOwner posture.
 fn server_addr() -> std::net::SocketAddr {
     static ADDR: OnceLock<std::net::SocketAddr> = OnceLock::new();
+    *ADDR.get_or_init(|| spawn("127.0.0.1"))
+}
+
+/// One non-loopback (0.0.0.0) server — the ReadOnly posture. Tests connect to
+/// it via 127.0.0.1; the posture keys on the BOUND address, not the caller's.
+fn readonly_addr() -> std::net::SocketAddr {
+    static ADDR: OnceLock<std::net::SocketAddr> = OnceLock::new();
     *ADDR.get_or_init(|| {
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            runtime.block_on(async move {
-                let listener = ikigai_web::serve::bind(0).await.unwrap();
-                tx.send(listener.local_addr().unwrap()).unwrap();
-                ikigai_web::serve::serve(Arc::new(test_kernel()), listener).await
-            })
-        });
-        rx.recv().unwrap()
+        let bound = spawn("0.0.0.0");
+        format!("127.0.0.1:{}", bound.port()).parse().unwrap()
     })
 }
 
-/// Send raw HTTP, return (status, headers-lowercased, body).
-fn roundtrip(request: &str) -> (u16, Vec<(String, String)>, Vec<u8>) {
-    let mut stream = TcpStream::connect(server_addr()).unwrap();
+/// Send raw HTTP to `addr`, return (status, headers-lowercased, body).
+fn roundtrip_at(
+    addr: std::net::SocketAddr,
+    request: &str,
+) -> (u16, Vec<(String, String)>, Vec<u8>) {
+    let mut stream = TcpStream::connect(addr).unwrap();
     stream.write_all(request.as_bytes()).unwrap();
     let mut response = Vec::new();
     stream.read_to_end(&mut response).unwrap();
@@ -173,6 +190,11 @@ fn roundtrip(request: &str) -> (u16, Vec<(String, String)>, Vec<u8>) {
         .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
         .collect();
     (status, headers, response[head_end + 4..].to_vec())
+}
+
+/// Send raw HTTP to the loopback server.
+fn roundtrip(request: &str) -> (u16, Vec<(String, String)>, Vec<u8>) {
+    roundtrip_at(server_addr(), request)
 }
 
 fn get(path_and_headers: &str) -> (u16, Vec<(String, String)>, Vec<u8>) {
@@ -594,6 +616,103 @@ fn sparql_rejects_other_methods() {
         roundtrip("DELETE /sparql HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n\r\n");
     assert_eq!(status, 405);
     assert_eq!(header(&headers, "allow"), Some("GET, POST"));
+}
+
+// ---------------------------------------------------------------------------
+// The read-only posture (non-loopback bind).
+// ---------------------------------------------------------------------------
+
+/// Off loopback the write surface is GONE: both spellings of the annotation
+/// sink refuse with 403 and a one-line reason, and so does every other
+/// non-GET/HEAD method — before any route dispatch.
+#[test]
+fn readonly_bind_disables_the_write_surface() {
+    let addr = readonly_addr();
+    let form = "target=urn%3Arepo%3Ax%3Afile%3Aa.rs&body=note&exact=let";
+    for path in ["/urn:annotation", "/k/sink%20urn:annotation"] {
+        let (status, headers, body) = roundtrip_at(
+            addr,
+            &format!(
+                "POST {path} HTTP/1.1\r\nHost: t\r\n\
+                 Content-Type: application/x-www-form-urlencoded\r\n\
+                 Content-Length: {}\r\n\r\n{form}",
+                form.len()
+            ),
+        );
+        assert_eq!(status, 403, "for {path}");
+        assert_eq!(header(&headers, "allow"), Some("GET, HEAD"));
+        let body = String::from_utf8(body).unwrap();
+        assert!(body.contains("read-only"), "body was: {body}");
+        assert!(body.contains("loopback"), "body was: {body}");
+    }
+    // Other methods refuse at the same gate.
+    let (status, _, _) = roundtrip_at(
+        addr,
+        "DELETE /urn:hello HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n\r\n",
+    );
+    assert_eq!(status, 403);
+}
+
+/// The read surface survives untouched: GET (with conneg), HEAD, the /k/
+/// adapter's source, and /sparql — including its POST spelling, which carries
+/// a QUERY, not a write.
+#[test]
+fn readonly_bind_still_reads() {
+    let addr = readonly_addr();
+    let (status, _, body) = roundtrip_at(addr, "GET /urn:hello HTTP/1.1\r\nHost: t\r\n\r\n");
+    assert_eq!(status, 200);
+    assert_eq!(body, b"hello");
+    let (status, _, body) = roundtrip_at(addr, "HEAD /urn:hello HTTP/1.1\r\nHost: t\r\n\r\n");
+    assert_eq!(status, 200);
+    assert!(body.is_empty());
+    let (status, _, _) = roundtrip_at(
+        addr,
+        "GET /k/source%20urn:hello%20as=text/html HTTP/1.1\r\nHost: t\r\n\r\n",
+    );
+    assert_eq!(status, 200);
+    let query = "SELECT ?s WHERE { ?s ?p ?o }";
+    let (status, headers, _) = roundtrip_at(
+        addr,
+        &format!(
+            "POST /sparql HTTP/1.1\r\nHost: t\r\n\
+             Content-Type: application/sparql-query\r\nContent-Length: {}\r\n\r\n{query}",
+            query.len()
+        ),
+    );
+    assert_eq!(status, 200);
+    assert_eq!(
+        header(&headers, "content-type"),
+        Some("application/sparql-results+json")
+    );
+    // /sparql stays read-only by its own construction: update forms refuse.
+    let update = ikigai_web::sparql::urlencode("INSERT DATA { <urn:x> <urn:p> 1 }");
+    let (status, _, _) = roundtrip_at(
+        addr,
+        &format!("GET /sparql?query={update} HTTP/1.1\r\nHost: t\r\n\r\n"),
+    );
+    assert_eq!(status, 400);
+}
+
+/// The shell page stops OFFERING the annotate form off loopback (the faces'
+/// markup comes from the mounted peer unchanged — the shell hides the class),
+/// and on loopback stays byte-identical to what it always served.
+#[test]
+fn readonly_shell_hides_the_annotate_form_loopback_does_not() {
+    const HIDE: &str = ".browse-annotate{display:none}";
+    let (status, _, body) = roundtrip_at(
+        readonly_addr(),
+        "GET /browse/urn:repo:demo:tree HTTP/1.1\r\nHost: t\r\n\r\n",
+    );
+    assert_eq!(status, 200);
+    assert!(
+        String::from_utf8(body).unwrap().contains(HIDE),
+        "read-only shell must hide the annotate form"
+    );
+    let (_, _, body) = get("/browse/urn:repo:demo:tree");
+    assert!(
+        !String::from_utf8(body).unwrap().contains(HIDE),
+        "loopback shell must not hide the annotate form"
+    );
 }
 
 /// Belt and braces for the test fixtures themselves: the kernel resolves the

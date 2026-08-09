@@ -10,21 +10,41 @@ browse roots; everything it serves lives on the mounted peers (typically the dev
 server behind `~/.ikigai/dev.sock`).
 
 ```
-ikigai-web [--port N] [--config PATH] [--mount LINE ...]
+ikigai-web [--bind IP:PORT | --port N] [--config PATH] [--mount LINE ...]
 ```
 
 Configuration comes from the config home and flags — never environment
-variables. `web.port` in the config sets the port (default 8642); `--port`
-overrides. `web.mount` config lines (and repeatable `--mount` flags) add
-mounts for **this process only** — see [Mounts](#mounts).
+variables. `web.bind` in the config sets the full bind address (`--bind`
+overrides); `web.port` is shorthand for `web.bind = "127.0.0.1:{port}"`
+(`--port` likewise) — they are one setting spelled two ways, so setting both
+is a loud error. Default: `127.0.0.1:8642`. Flags override config wholesale.
+`web.mount` config lines (and repeatable `--mount` flags) add mounts for
+**this process only** — see [Mounts](#mounts).
 
-## Trust posture (v1)
+## Trust posture
 
-Binds **127.0.0.1 only**, unconditionally — no flag widens it. The trust model
-is *the local owner*, the same posture the dev socket's peer-credential check
-takes. Requests resolve under the root capability locally; capability does not
-yet cross the IPC wire, so a mounted peer serves under its own authority for a
+Binds **127.0.0.1 by default**. On loopback the trust model is *the local
+owner*, the same posture the dev socket's peer-credential check takes.
+Requests resolve under the root capability locally; capability does not yet
+cross the IPC wire, so a mounted peer serves under its own authority for a
 peercred-authenticated local client — exactly what it grants the CLI.
+
+A non-loopback bind (`web.bind = "0.0.0.0:8642"`, or `--bind 0.0.0.0:8642`)
+serves **read-only**: one gate ahead of all dispatch refuses everything that
+is not GET/HEAD with a 403, so the write surface — the annotation Sink, in
+both its `POST /urn:annotation…` and `/k/sink` spellings — is *gone*, not
+gated per-route. The exception is `POST /sparql`, whose body is a query (that
+face is read-only by its own construction and rejects update forms itself).
+The posture derives from the socket actually bound, inside `serve` itself; the
+startup line states it. The browse shell also stops offering the annotate form
+off loopback (presentation — the gate is the boundary).
+
+This is deliberately **trust-the-LAN, for demos**: anyone on the network can
+read what the mounted peers serve, and there is intentionally no auth theater
+in front of that. Real authentication is the passkey → capability-workspace
+arc (a WebAuthn login minting a capability-scoped workspace, the
+`ikigai-cms-web` lineage); until that lands here, don't bind a kernel with
+sensitive mounts beyond loopback.
 
 ## The face
 

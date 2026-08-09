@@ -8,17 +8,38 @@
 //! no browse roots: everything it serves lives on the mounted peers (on a
 //! typical machine, the dev server behind `~/.ikigai/dev.sock`).
 //!
-//! ## Trust posture (v1)
+//! ## Trust posture
 //!
-//! The server binds **127.0.0.1 only**, unconditionally — there is no flag to
-//! widen it. The trust model is *the local owner*, the same posture the dev
-//! socket's peer-credential check takes: anything that can open a loopback
-//! connection on this machine is the machine's owner. Requests resolve under
-//! the root capability locally; capability does not yet cross the IPC wire, so
-//! the mounted peer serves under its own authority for a peercred-authenticated
-//! local client — exactly what it grants the CLI. Widening the bind or adding
-//! an authenticating capability door (the multi-tenant seam) is deliberately a
-//! later slice, not a config knob one typo away.
+//! The server binds **127.0.0.1 by default**. On loopback the trust model is
+//! *the local owner*, the same posture the dev socket's peer-credential check
+//! takes: anything that can open a loopback connection on this machine is the
+//! machine's owner. Requests resolve under the root capability locally;
+//! capability does not yet cross the IPC wire, so the mounted peer serves
+//! under its own authority for a peercred-authenticated local client — exactly
+//! what it grants the CLI.
+//!
+//! `web.bind` (config) / `--bind` (flag) can widen the bind for a LAN demo
+//! (`web.bind = "0.0.0.0:8642"`) — and off loopback the server is **read-only
+//! by construction**, not by per-route discipline: one gate ahead of all
+//! dispatch refuses everything that is not GET/HEAD with a 403, so the write
+//! surface (the annotation Sink, in both its spellings) is GONE, and no
+//! future route can widen it by forgetting a check. The one exception is
+//! `POST /sparql`, whose body is a QUERY — that face is read-only by its own
+//! construction ([`sparql`] rejects update forms before the kernel sees
+//! them). The posture is derived from the socket ACTUALLY bound, inside
+//! [`serve::serve`] itself — there is no parameter by which a non-loopback
+//! listener could start with a live write surface. The browse shell also
+//! stops offering the annotate form off loopback (presentation only; the
+//! gate is the boundary).
+//!
+//! This is deliberately **trust-the-LAN, for demos**: anyone on the network
+//! can read whatever the mounted peers serve, and there is intentionally no
+//! auth theater in front of that (no token in a URL, no password form — a
+//! decoration that suggests a boundary it doesn't enforce is worse than the
+//! honest posture line at startup). Real authentication here is the passkey →
+//! capability-workspace arc (a WebAuthn login mints a capability-scoped
+//! workspace, the `ikigai-cms-web` lineage); until that lands, do not bind a
+//! kernel with sensitive mounts beyond loopback.
 //!
 //! ## Verb map
 //!
