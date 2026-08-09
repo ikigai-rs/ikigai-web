@@ -10,6 +10,11 @@
 //!
 //! Keys this server reads:
 //! - `mount` (repeatable) — the machine's topology; see [`crate::mounts`].
+//! - `web.mount` (repeatable) — mounts for THIS process only, same grammar.
+//!   Web-scoped by key: the CLI hosts read `mount` and never `web.mount`, so
+//!   a web-only mount (e.g. `web.mount = "prefer urn:sparql:=~/.ikigai/
+//!   dev.sock"` for the /sparql face) cannot shadow their local spaces
+//!   machine-wide. A repeatable `--mount` flag is the ad-hoc spelling.
 //! - `web.port` — the port to serve on (a `--port` flag overrides).
 
 use std::path::PathBuf;

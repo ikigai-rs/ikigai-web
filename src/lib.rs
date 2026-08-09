@@ -28,6 +28,10 @@
 //! - `POST /urn:annotation[:{id}]` → `Sink` — the ONE write route v1 exposes,
 //!   because the browse annotation overlay needs it. Form-encoded bodies map
 //!   to invocation args; any other body arrives as the piped `content`.
+//! - `GET`/`POST /sparql` → `Source` on `urn:sparql:{select|ask|construct|
+//!   describe}` — the content-negotiated SPARQL face (see [`sparql`]). POST
+//!   here carries a long QUERY, not a write: execution is always `Source`,
+//!   update forms are rejected at the face, so the write surface is unchanged.
 //! - everything else → 405 with `Allow`.
 //!
 //! ## The browse host (`/browse/{uri}`, `/k/…`)
@@ -64,3 +68,4 @@
 pub mod config;
 pub mod mounts;
 pub mod serve;
+pub mod sparql;
