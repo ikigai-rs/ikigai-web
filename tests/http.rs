@@ -58,6 +58,48 @@ fn annotation() -> FnEndpoint {
     })
 }
 
+/// Stub `urn:sparql:{form}` endpoints: shaped like ikigai-sparql's faces
+/// (default = sparql-results+json for select/ask, turtle for construct/
+/// describe; `as=` picks CSV/TSV), but canned — the tests here exercise the
+/// FACE's contract (routing by form, conneg → `as=`, query passthrough), not
+/// query evaluation, which is ikigai-sparql's own tested job.
+fn sparql_stub(form: &'static str) -> FnEndpoint {
+    FnEndpoint::new(form, move |inv| {
+        if inv.request.verb != Verb::Source {
+            return Err(Error::Endpoint("sparql: Source only".into()));
+        }
+        // A face bug that drops the query must fail loudly here.
+        let query = inv.inline_str("query").unwrap_or("");
+        if query.is_empty() {
+            return Err(Error::MissingArgument("query".into()));
+        }
+        if form == "construct" || form == "describe" {
+            return Ok(Representation::new(
+                ReprType::new("text/turtle"),
+                format!("<urn:x:1> <urn:from> \"{form}\" ."),
+            ));
+        }
+        match inv.inline_str("as").unwrap_or("") {
+            "text/csv" => Ok(Representation::new(
+                ReprType::new("text/csv"),
+                if form == "ask" {
+                    "true"
+                } else {
+                    "s\r\nurn:x:1"
+                },
+            )),
+            "text/tab-separated-values" => Ok(Representation::new(
+                ReprType::new("text/tab-separated-values"),
+                "?s\t?note\n<urn:x:1>\t\"hi\\nthere\"@en\n",
+            )),
+            _ => Ok(Representation::new(
+                ReprType::new("application/sparql-results+json"),
+                format!("{{\"form\":\"{form}\",\"query\":\"{}\"}}", query.len()),
+            )),
+        }
+    })
+}
+
 fn erroring(kind: &'static str) -> FnEndpoint {
     FnEndpoint::new(kind, move |_inv| -> Result<Representation, Error> {
         Err(match kind {
@@ -74,6 +116,10 @@ fn test_kernel() -> Kernel {
         .bind(Exact::new("urn:pure"), pure())
         .bind(Exact::new("urn:annotation"), annotation())
         .bind(Exact::new("urn:annotation:abc"), annotation())
+        .bind(Exact::new("urn:sparql:select"), sparql_stub("select"))
+        .bind(Exact::new("urn:sparql:ask"), sparql_stub("ask"))
+        .bind(Exact::new("urn:sparql:construct"), sparql_stub("construct"))
+        .bind(Exact::new("urn:sparql:describe"), sparql_stub("describe"))
         .bind(Exact::new("urn:missing"), erroring("missing"))
         .bind(Exact::new("urn:denied"), erroring("denied"))
         .bind(Exact::new("urn:asleep"), erroring("asleep"));
@@ -372,6 +418,182 @@ fn browse_shell_hosts_the_faces() {
         header(&headers, "content-type"),
         Some("text/javascript; charset=utf-8")
     );
+}
+
+// ---------------------------------------------------------------------------
+// The /sparql face.
+// ---------------------------------------------------------------------------
+
+/// A protocol client (curl, another tool) with no Accept opinion gets the
+/// endpoint's default face: sparql-results+json, routed by query form.
+#[test]
+fn sparql_get_executes_with_the_default_json_face() {
+    let query = ikigai_web::sparql::urlencode("SELECT ?s WHERE { ?s ?p ?o }");
+    let (status, headers, body) = get(&format!("/sparql?query={query}"));
+    assert_eq!(status, 200);
+    assert_eq!(
+        header(&headers, "content-type"),
+        Some("application/sparql-results+json")
+    );
+    let body = String::from_utf8(body).unwrap();
+    assert!(body.contains("\"form\":\"select\""), "body was: {body}");
+}
+
+/// `Accept: text/csv` becomes `as=text/csv` on the endpoint; ASK routes to
+/// `urn:sparql:ask`; CONSTRUCT comes back as Turtle.
+#[test]
+fn sparql_conneg_selects_faces_and_forms_route() {
+    let query = ikigai_web::sparql::urlencode("ASK { ?s ?p ?o }");
+    let (status, headers, body) = roundtrip(&format!(
+        "GET /sparql?query={query} HTTP/1.1\r\nHost: t\r\nAccept: text/csv\r\n\r\n"
+    ));
+    assert_eq!(status, 200);
+    assert_eq!(
+        header(&headers, "content-type"),
+        Some("text/csv; charset=utf-8")
+    );
+    assert_eq!(body, b"true");
+
+    let query = ikigai_web::sparql::urlencode("CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }");
+    let (status, headers, body) = get(&format!("/sparql?query={query}"));
+    assert_eq!(status, 200);
+    assert_eq!(
+        header(&headers, "content-type"),
+        Some("text/turtle; charset=utf-8")
+    );
+    assert!(String::from_utf8(body).unwrap().contains("construct"));
+}
+
+/// An explicit `?as=` wins even over a browser Accept — the editor page's own
+/// raw-face links depend on this.
+#[test]
+fn sparql_explicit_as_wins_over_accept() {
+    let query = ikigai_web::sparql::urlencode("SELECT ?s WHERE { ?s ?p ?o }");
+    let (status, headers, _) = roundtrip(&format!(
+        "GET /sparql?query={query}&as=text/csv HTTP/1.1\r\nHost: t\r\nAccept: text/html\r\n\r\n"
+    ));
+    assert_eq!(status, 200);
+    assert_eq!(
+        header(&headers, "content-type"),
+        Some("text/csv; charset=utf-8")
+    );
+}
+
+/// POST carries a long query: raw body (`application/sparql-query`) and form
+/// body (`query=` field) both execute — as Source, never widening the write
+/// surface.
+#[test]
+fn sparql_post_bodies_carry_the_query() {
+    let query = "SELECT ?s WHERE { ?s ?p ?o }";
+    let (status, headers, _) = roundtrip(&format!(
+        "POST /sparql HTTP/1.1\r\nHost: t\r\n\
+         Content-Type: application/sparql-query\r\nContent-Length: {}\r\n\r\n{query}",
+        query.len()
+    ));
+    assert_eq!(status, 200);
+    assert_eq!(
+        header(&headers, "content-type"),
+        Some("application/sparql-results+json")
+    );
+
+    let form = format!("query={}", ikigai_web::sparql::urlencode(query));
+    let (status, _, body) = roundtrip(&format!(
+        "POST /sparql HTTP/1.1\r\nHost: t\r\n\
+         Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{form}",
+        form.len()
+    ));
+    assert_eq!(status, 200);
+    assert!(String::from_utf8(body).unwrap().contains("select"));
+}
+
+/// Update forms are refused at the face, loudly, before the kernel sees them.
+#[test]
+fn sparql_update_forms_are_refused() {
+    for update in [
+        "INSERT DATA { <urn:x> <urn:p> 1 }",
+        "DELETE WHERE { ?s ?p ?o }",
+    ] {
+        let query = ikigai_web::sparql::urlencode(update);
+        let (status, _, body) = get(&format!("/sparql?query={query}"));
+        assert_eq!(status, 400);
+        let body = String::from_utf8(body).unwrap();
+        assert!(body.contains("read-only"), "body was: {body}");
+    }
+    // No query at all (non-HTML client) is a 400, not an empty editor.
+    let (status, _, _) = get("/sparql?x=1");
+    assert_eq!(status, 400);
+}
+
+/// A browser gets the editor page: the query prefilled BYTE-EXACTLY in the
+/// textarea, results rendered as a table below, and every sample in the
+/// sidebar with a click-to-fill link whose href round-trips byte-exactly.
+#[test]
+fn sparql_editor_page_prefills_and_renders_results() {
+    let query = "SELECT ?s WHERE { ?s ?p ?o } # <tag> & \"quotes\"";
+    let encoded = ikigai_web::sparql::urlencode(query);
+    let (status, headers, body) = roundtrip(&format!(
+        "GET /sparql?query={encoded} HTTP/1.1\r\nHost: t\r\nAccept: text/html\r\n\r\n"
+    ));
+    assert_eq!(status, 200);
+    assert_eq!(
+        header(&headers, "content-type"),
+        Some("text/html; charset=utf-8")
+    );
+    let body = String::from_utf8(body).unwrap();
+    // The prefill is the html-escape of the exact query text.
+    let escaped = query
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;");
+    assert!(body.contains(&escaped), "page was: {body}");
+    // Results: the stub's TSV row became a table with a linked urn: IRI and
+    // an unescaped literal.
+    assert!(body.contains("<th>s</th><th>note</th>"), "page was: {body}");
+    assert!(
+        body.contains("<a href=\"/urn:x:1\"><code>urn:x:1</code></a>"),
+        "page was: {body}"
+    );
+    assert!(body.contains("hi\nthere"), "page was: {body}");
+    // Sidebar: all eight samples, each with a byte-exact click-to-fill href.
+    for sample in ikigai_web::sparql::samples() {
+        assert!(body.contains(sample.title), "missing: {}", sample.title);
+        let href = format!(
+            "/sparql?query={}",
+            ikigai_web::sparql::urlencode(&sample.query())
+        );
+        assert!(body.contains(&href), "missing href for: {}", sample.title);
+    }
+    // The editor is same-origin: no external URL anywhere in the page.
+    assert!(!body.contains("https://cdn"), "page was: {body}");
+    assert!(!body.contains("http://cdn"), "page was: {body}");
+}
+
+/// An empty editor (no query yet) and a query error both render the page —
+/// the editor is the html face's 200 even when the query is wrong.
+#[test]
+fn sparql_editor_page_handles_empty_and_bad_queries() {
+    let (status, _, body) =
+        roundtrip("GET /sparql HTTP/1.1\r\nHost: t\r\nAccept: text/html\r\n\r\n");
+    assert_eq!(status, 200);
+    assert!(String::from_utf8(body).unwrap().contains("<textarea"));
+
+    let query = ikigai_web::sparql::urlencode("DROP GRAPH <urn:g>");
+    let (status, _, body) = roundtrip(&format!(
+        "GET /sparql?query={query} HTTP/1.1\r\nHost: t\r\nAccept: text/html\r\n\r\n"
+    ));
+    assert_eq!(status, 200);
+    let body = String::from_utf8(body).unwrap();
+    assert!(body.contains("read-only"), "page was: {body}");
+}
+
+/// The face's method surface is GET and POST only.
+#[test]
+fn sparql_rejects_other_methods() {
+    let (status, headers, _) =
+        roundtrip("DELETE /sparql HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n\r\n");
+    assert_eq!(status, 405);
+    assert_eq!(header(&headers, "allow"), Some("GET, POST"));
 }
 
 /// Belt and braces for the test fixtures themselves: the kernel resolves the

@@ -54,19 +54,19 @@ async fn handle(kernel: Arc<Kernel>, mut stream: TcpStream) -> std::io::Result<(
 }
 
 /// A parsed request — just what the browse face needs.
-struct HttpRequest {
-    method: String,
+pub(crate) struct HttpRequest {
+    pub(crate) method: String,
     /// Percent-DECODED path, no query.
-    path: String,
+    pub(crate) path: String,
     /// Percent-decoded query pairs, in order.
-    query: Vec<(String, String)>,
+    pub(crate) query: Vec<(String, String)>,
     /// Lowercased header names.
-    headers: Vec<(String, String)>,
-    body: Vec<u8>,
+    pub(crate) headers: Vec<(String, String)>,
+    pub(crate) body: Vec<u8>,
 }
 
 impl HttpRequest {
-    fn header(&self, name: &str) -> Option<&str> {
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
             .find(|(k, _)| k == name)
@@ -75,17 +75,17 @@ impl HttpRequest {
 }
 
 /// The response under assembly.
-struct Resp {
-    status: u16,
+pub(crate) struct Resp {
+    pub(crate) status: u16,
     /// (name, value) — `Content-Length`, `Connection` and the standard hygiene
     /// headers are added at write time.
-    headers: Vec<(String, String)>,
-    body: Vec<u8>,
+    pub(crate) headers: Vec<(String, String)>,
+    pub(crate) body: Vec<u8>,
     /// HEAD and 304-family responses send headers only.
-    suppress_body: bool,
+    pub(crate) suppress_body: bool,
 }
 
-fn error_resp(status: u16, detail: &str) -> Resp {
+pub(crate) fn error_resp(status: u16, detail: &str) -> Resp {
     Resp {
         status,
         headers: vec![
@@ -189,7 +189,7 @@ pub fn percent_decode(s: &str, plus_is_space: bool) -> Option<String> {
 
 /// Split a query (or form body) into decoded pairs; pairs that fail to decode
 /// are dropped rather than misread.
-fn parse_query(raw: &str) -> Vec<(String, String)> {
+pub(crate) fn parse_query(raw: &str) -> Vec<(String, String)> {
     raw.split('&')
         .filter(|piece| !piece.is_empty())
         .filter_map(|piece| {
@@ -262,6 +262,9 @@ async fn respond(kernel: &Kernel, req: HttpRequest) -> Resp {
     }
     if req.path == "/htmx.min.js" {
         return htmx_js();
+    }
+    if req.path == "/sparql" {
+        return crate::sparql::respond(kernel, &req).await;
     }
     if let Some(command) = req.path.strip_prefix("/k/") {
         return k_command(kernel, &req, command.to_string()).await;
@@ -612,6 +615,9 @@ async fn index(kernel: &Kernel) -> Resp {
          <h1>ikigai</h1>\
          <p>Resources this kernel serves. Open any <code>urn:*</code> as a path, \
          e.g. <code>/urn:repo:ikigai-core:tree</code>.</p>\
+         <h2>Query</h2>\
+         <p><a href=\"/sparql\">SPARQL editor</a> \u{2014} the shared RDF store \
+         (explanations, annotations, review passes), queryable.</p>\
          {repos}\
          <h2>Catalog</h2><ul>\n{rows}</ul></body></html>\n"
     );
@@ -629,7 +635,7 @@ async fn index(kernel: &Kernel) -> Resp {
     }
 }
 
-fn html_escape(s: &str) -> String {
+pub(crate) fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")

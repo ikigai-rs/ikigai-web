@@ -10,12 +10,13 @@ browse roots; everything it serves lives on the mounted peers (typically the dev
 server behind `~/.ikigai/dev.sock`).
 
 ```
-ikigai-web [--port N] [--config PATH]
+ikigai-web [--port N] [--config PATH] [--mount LINE ...]
 ```
 
 Configuration comes from the config home and flags — never environment
 variables. `web.port` in the config sets the port (default 8642); `--port`
-overrides.
+overrides. `web.mount` config lines (and repeatable `--mount` flags) add
+mounts for **this process only** — see [Mounts](#mounts).
 
 ## Trust posture (v1)
 
@@ -32,6 +33,7 @@ peercred-authenticated local client — exactly what it grants the CLI.
 | `GET /{uri}` | `Source` — query args pass through as invocation args (`?annotations=include`) |
 | `HEAD /{uri}` | `Exists` — 200 (no body) on `true`, 404 on `false` |
 | `POST /urn:annotation[:{id}]` | `Sink` — the one write route v1 exposes (annotation minting for the browse overlay) |
+| `GET`/`POST /sparql` | `Source` on `urn:sparql:{form}` — the SPARQL face (below) |
 | `GET /` | index: browsable repos (via `urn:repo:list`) + the kernel catalog |
 | `GET /browse/{uri}` | the htmx shell page hosting the browse family's HTML faces |
 | `GET /k/source <iri> [k=v ...]` | the host adapter the faces' `hx-get` affordances target |
@@ -64,6 +66,42 @@ design (threads never cross a wire mount), so for mounted resources this edge
 holds no validity to surface — and a content-hash ETag would fake freshness the
 kernel never asserted. When validity crosses the wire, the ETag lands here.
 
+## /sparql — the SPARQL face
+
+`GET /sparql?query=…` (or `POST /sparql` with the query as the body — raw
+`application/sparql-query` or a form's `query=` field — for long queries),
+content-negotiated:
+
+- **`Accept: text/html`** — the editor page: query prefilled and
+  syntax-highlighted, results as a table below (SELECT; `urn:*` IRIs link back
+  into this server), a boolean (ASK) or Turtle (CONSTRUCT/DESCRIBE), and the
+  eight sample queries from the review layer as sidebar links that fill the
+  editor on click. Entirely same-origin: the editor is a small inline highlight
+  overlay, not a vendored bundle — no external requests, ever.
+- **anything else** — the raw result: `application/sparql-results+json` by
+  default; `text/csv`, `text/tab-separated-values`, `+xml`, `text/turtle` via
+  `Accept` or an explicit `?as=` (which wins). A protocol-ish endpoint other
+  tools can point at.
+
+Execution routes by **query form** — the first meaningful token after the
+prologue picks `urn:sparql:select` / `:ask` / `:construct` / `:describe` — and
+is always `Verb::Source`. The face is **read-only**: update forms
+(INSERT/DELETE/…) are rejected loudly before the kernel sees them, so
+`POST /sparql` does not widen the write surface.
+
+The `urn:sparql:*` space typically lives on the dev server (its shared live
+store: explanations, annotations, review passes). Mount it for this process
+only:
+
+```toml
+web.mount = "prefer urn:sparql:=~/.ikigai/dev.sock"
+```
+
+`web.mount` (not a bare `mount` line) because the key is web-scoped: the CLI
+hosts read `mount` and never `web.mount`, so a machine-wide `mount` line would
+shadow their **local** sparql spaces — this one cannot. `--mount` is the ad-hoc
+flag spelling of the same line.
+
 ## Mounts
 
 Each config line is `<mode> <prefix>=<target>`, the CLI's grammar:
@@ -72,6 +110,9 @@ Each config line is `<mode> <prefix>=<target>`, the CLI's grammar:
 mount = "prefer urn:repo:=~/.ikigai/dev.sock"
 mount = "prefer urn:annotation:=~/.ikigai/dev.sock"
 ```
+
+`web.mount` lines and `--mount` flags use the same grammar and compose after
+the shared `mount` lines, for this process only.
 
 `alias` renames a remote's `urn:` namespace under a local prefix; `override`
 forwards IRIs unchanged and connects eagerly (a dead peer is a startup error);
