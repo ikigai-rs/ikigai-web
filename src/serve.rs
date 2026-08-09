@@ -554,6 +554,8 @@ const BROWSE_CSS: &str = "\
  .browse-size{opacity:.6;font-size:.85em;margin-left:.5rem}\
  pre,code{font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;\
    overflow-x:auto}\
+ .browse-code,.browse-pr-diff,pre:has(> code){color-scheme:light;\
+   background:#fff;color:#24292e;padding:.6rem .8rem;border-radius:6px}\
  .browse-annotate{margin:1rem 0;display:grid;gap:.4rem;max-width:32rem}\
  .browse-annotate input,.browse-annotate textarea{font:inherit;padding:.3rem}\
 ";
