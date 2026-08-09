@@ -620,6 +620,10 @@ const BROWSE_CSS: &str = "\
  .browse-entries{list-style:none;padding-left:0}\
  .browse-entries li{padding:.1rem 0}\
  .browse-crumbs{margin-bottom:.75rem}\
+ .browse-actions{display:flex;flex-wrap:wrap;gap:.9rem;margin-bottom:.75rem}\
+ .index-badge{font-size:.72em;padding:.05em .5em;margin-left:.35rem;\
+   border:1px solid light-dark(#1e7e34,#7bd88f);border-radius:999px;\
+   color:light-dark(#1e7e34,#7bd88f);vertical-align:.1em;white-space:nowrap}\
  .browse-sep{opacity:.5;margin:0 .25rem}\
  .browse-size{opacity:.6;font-size:.85em;margin-left:.5rem}\
  pre,code{font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;\
@@ -630,29 +634,66 @@ const BROWSE_CSS: &str = "\
  .browse-annotate input,.browse-annotate textarea{font:inherit;padding:.3rem}\
 ";
 
-/// `GET /` — a courtesy index: the browsable repos (via `urn:repo:list`, when
-/// a peer serves it) and the kernel's catalog as links, so Safari lands
-/// somewhere useful. Derived entirely from resolution and `kernel.entries()`
-/// (the catalog IS the machine-legible face); an asleep peer simply
-/// contributes nothing.
+/// The browse-root set the CATALOG asserts: each mounted root contributes a
+/// `urn:repo:{name}:tree` row to `kernel.entries()`, so the names extracted
+/// here are the repos `/browse/…` can actually serve — including roots that
+/// live outside the scan directory and so never appear in `urn:repo:list`.
+fn browse_roots(entries: &[ikigai_core::SpaceEntry]) -> std::collections::BTreeSet<String> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let name = entry
+                .pattern
+                .strip_prefix("urn:repo:")?
+                .strip_suffix(":tree")?;
+            // A root NAME, not a deeper pattern: `urn:repo:branch` (no name),
+            // `…:tree:{path}` (suffix mismatch) and any templated segment are
+            // all someone else's rows.
+            (!name.is_empty() && !name.contains(':') && !name.contains('{'))
+                .then(|| name.to_string())
+        })
+        .collect()
+}
+
+/// `GET /` — a courtesy index: the repos (the `urn:repo:list` scan ∪ the
+/// catalog's browse roots — the scan is what's on disk, the roots are what's
+/// actually mounted, and neither contains the other) and the kernel's catalog
+/// as links, so Safari lands somewhere useful. Derived entirely from
+/// resolution and `kernel.entries()` (the catalog IS the machine-legible
+/// face); an asleep peer simply contributes nothing.
 async fn index(kernel: &Kernel) -> Resp {
-    // Best-effort: the repo list is itself a resource; no peer, no section.
-    let mut repos = String::new();
+    let mut entries = kernel.entries().unwrap_or_default();
+    entries.sort_by(|a, b| a.pattern.cmp(&b.pattern));
+    let roots = browse_roots(&entries);
+    // Best-effort: the repo list is itself a resource; no peer, no scan names.
+    let mut names: Vec<String> = roots.iter().cloned().collect();
     if let Ok(target) = Iri::parse("urn:repo:list") {
         if let Ok(repr) = kernel
             .issue(Request::new(Verb::Source, target), &Capability::root())
             .await
         {
             for line in String::from_utf8_lossy(&repr.bytes).lines() {
-                let Some(name) = line.split('\t').next().filter(|n| !n.is_empty()) else {
-                    continue;
-                };
-                let name = html_escape(name);
-                repos.push_str(&format!(
-                    "<li><a href=\"/browse/urn:repo:{name}:tree\"><code>{name}</code></a></li>\n"
-                ));
+                if let Some(name) = line.split('\t').next().filter(|n| !n.is_empty()) {
+                    names.push(name.to_string());
+                }
             }
         }
+    }
+    names.sort();
+    names.dedup();
+    let mut repos = String::new();
+    for name in &names {
+        // The badge marks the rows the catalog BACKS — an unmounted scan row
+        // renders as before (the link is a courtesy; resolution says 404).
+        let badge = if roots.contains(name) {
+            " <span class=\"index-badge\">browsable</span>"
+        } else {
+            ""
+        };
+        let name = html_escape(name);
+        repos.push_str(&format!(
+            "<li><a href=\"/browse/urn:repo:{name}:tree\"><code>{name}</code></a>{badge}</li>\n"
+        ));
     }
     let repos = if repos.is_empty() {
         String::new()
@@ -660,8 +701,6 @@ async fn index(kernel: &Kernel) -> Resp {
         format!("<h2>Browse a repo</h2><ul>\n{repos}</ul>")
     };
     let mut rows = String::new();
-    let mut entries = kernel.entries().unwrap_or_default();
-    entries.sort_by(|a, b| a.pattern.cmp(&b.pattern));
     for entry in &entries {
         let pattern = html_escape(&entry.pattern);
         // A repo tree opens in the htmx shell (clickable browse); everything
@@ -805,6 +844,22 @@ mod tests {
         assert_eq!(status_of(&Error::Timeout("x".into())), 504);
         assert_eq!(status_of(&Error::MissingArgument("x".into())), 400);
         assert_eq!(status_of(&Error::Endpoint("x".into())), 500);
+    }
+
+    #[test]
+    fn browse_roots_are_exactly_the_root_tree_patterns() {
+        let entries = vec![
+            ikigai_core::SpaceEntry::new("urn:repo:folio:tree", "tree"),
+            // Deeper and templated patterns under the same root: not names.
+            ikigai_core::SpaceEntry::new("urn:repo:folio:tree:{path}", "tree"),
+            ikigai_core::SpaceEntry::new("urn:repo:{name}:tree", "tree"),
+            ikigai_core::SpaceEntry::new("urn:repo:x:sub:tree", "tree"),
+            // Root-less repo endpoints and unrelated bindings: not names.
+            ikigai_core::SpaceEntry::new("urn:repo:branch", "branch"),
+            ikigai_core::SpaceEntry::new("urn:hello", "hello"),
+        ];
+        let roots: Vec<String> = browse_roots(&entries).into_iter().collect();
+        assert_eq!(roots, vec!["folio".to_string()]);
     }
 
     #[test]
