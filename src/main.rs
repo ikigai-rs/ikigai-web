@@ -1,18 +1,25 @@
-//! `ikigai-web` — serve the machine's kernel to a browser, loopback-only.
+//! `ikigai-web` — serve the machine's kernel to a browser.
 //!
 //! Composition and policy live in the library (`ikigai_web`); this binary reads
 //! the config home + flags (never environment variables), composes the kernel
-//! from the machine's `mount` lines, and serves.
+//! from the machine's `mount` lines, and serves. Default bind is loopback (the
+//! full v1 surface); a non-loopback bind serves READ-ONLY — see the library's
+//! trust-posture doc.
 
 use std::sync::Arc;
 
-const DEFAULT_PORT: u16 = 8642;
-
-const USAGE: &str = "usage: ikigai-web [--port N] [--config PATH] [--mount LINE ...]\n\
+const USAGE: &str =
+    "usage: ikigai-web [--bind IP:PORT | --port N] [--config PATH] [--mount LINE ...]\n\
  \n\
- Serves the machine's mounted kernel over HTTP on 127.0.0.1 (loopback only).\n\
+ Serves the machine's mounted kernel over HTTP. Default bind: 127.0.0.1:8642\n\
+ (loopback — the full surface). A NON-loopback bind serves read-only: the\n\
+ write surface is disabled, GET/HEAD and /sparql queries only.\n\
  \n\
-   --port N       port to listen on (default: `web.port` in the config, else 8642)\n\
+   --bind IP:PORT address to bind (config: `web.bind`); an IP, not a hostname.\n\
+                  e.g. --bind 0.0.0.0:8642 to demo browse + /sparql to the LAN\n\
+   --port N       shorthand for --bind 127.0.0.1:N (config: `web.port`).\n\
+                  Flags override config wholesale; `web.bind` and `web.port`\n\
+                  are one setting spelled two ways — setting both is an error\n\
    --config PATH  config file (default: ~/.config/ikigai/config.toml)\n\
    --mount LINE   additional mount for THIS process only (repeatable; same\n\
                   grammar as a config `mount` line, e.g.\n\
@@ -22,12 +29,17 @@ const USAGE: &str = "usage: ikigai-web [--port N] [--config PATH] [--mount LINE 
                   are never shadowed machine-wide.\n";
 
 fn main() {
+    let mut bind_flag: Option<String> = None;
     let mut port_flag: Option<u16> = None;
     let mut config_flag: Option<String> = None;
     let mut mount_flags: Vec<String> = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--bind" => match args.next() {
+                Some(value) => bind_flag = Some(value),
+                None => fail("--bind: expected IP:PORT (e.g. 0.0.0.0:8642)"),
+            },
             "--port" => {
                 let value = args.next().unwrap_or_default();
                 match value.parse() {
@@ -86,14 +98,11 @@ fn main() {
         })
         .collect();
 
-    let port = port_flag
-        .or_else(|| {
-            ikigai_web::config::value_for(&config_text, "web.port").map(|v| match v.parse() {
-                Ok(p) => p,
-                Err(_) => fail(&format!("web.port: `{v}` is not a port number")),
-            })
-        })
-        .unwrap_or(DEFAULT_PORT);
+    let bind = match ikigai_web::config::resolve_bind(bind_flag.as_deref(), port_flag, &config_text)
+    {
+        Ok(addr) => addr,
+        Err(e) => fail(&e),
+    };
 
     for line in &lines {
         eprintln!("mount: {:?} {} -> {}", line.kind, line.prefix, line.target);
@@ -108,11 +117,30 @@ fn main() {
         .build()
         .expect("tokio runtime");
     runtime.block_on(async move {
-        let listener = match ikigai_web::serve::bind(port).await {
+        let listener = match ikigai_web::serve::bind(bind).await {
             Ok(listener) => listener,
-            Err(e) => fail(&format!("cannot bind 127.0.0.1:{port}: {e}")),
+            Err(e) => fail(&format!("cannot bind {bind}: {e}")),
         };
-        eprintln!("serving http://127.0.0.1:{port}/ (loopback only)");
+        // The posture line states what this bind MEANS, from the socket
+        // actually bound ([`serve`] re-derives the same posture internally —
+        // if it could not be derived, the server would refuse to start).
+        let addr = match listener.local_addr() {
+            Ok(addr) => addr,
+            Err(e) => fail(&format!("cannot read the bound address: {e}")),
+        };
+        let posture = match ikigai_web::serve::Posture::of(&listener) {
+            Ok(posture) => posture,
+            Err(e) => fail(&format!("cannot derive the trust posture: {e}")),
+        };
+        match posture {
+            ikigai_web::serve::Posture::LocalOwner => {
+                eprintln!("serving http://{addr}/ (loopback only)")
+            }
+            ikigai_web::serve::Posture::ReadOnly => eprintln!(
+                "serving http://{addr}/ — read-only (non-loopback): the write surface is \
+                 disabled; GET/HEAD and /sparql queries only"
+            ),
+        }
         ikigai_web::serve::serve(kernel, listener).await
     })
 }
