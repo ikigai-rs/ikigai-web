@@ -100,6 +100,17 @@ fn sparql_stub(form: &'static str) -> FnEndpoint {
     })
 }
 
+/// The `urn:repo:list` scan's shape: `name\tpath` lines. `beta` is also
+/// mounted (a `urn:repo:beta:tree` binding below); `alpha` is scan-only.
+fn repo_list() -> FnEndpoint {
+    FnEndpoint::new("repo-list", |_inv| {
+        Ok(Representation::new(
+            ReprType::new("text/plain"),
+            "alpha\t/scan/alpha\nbeta\t/scan/beta\n",
+        ))
+    })
+}
+
 fn erroring(kind: &'static str) -> FnEndpoint {
     FnEndpoint::new(kind, move |_inv| -> Result<Representation, Error> {
         Err(match kind {
@@ -120,6 +131,11 @@ fn test_kernel() -> Kernel {
         .bind(Exact::new("urn:sparql:ask"), sparql_stub("ask"))
         .bind(Exact::new("urn:sparql:construct"), sparql_stub("construct"))
         .bind(Exact::new("urn:sparql:describe"), sparql_stub("describe"))
+        .bind(Exact::new("urn:repo:list"), repo_list())
+        // Mounted browse roots: `beta` is also in the scan, `folio` is not
+        // (the root-living-elsewhere case the index must still surface).
+        .bind(Exact::new("urn:repo:beta:tree"), hello())
+        .bind(Exact::new("urn:repo:folio:tree"), hello())
         .bind(Exact::new("urn:missing"), erroring("missing"))
         .bind(Exact::new("urn:denied"), erroring("denied"))
         .bind(Exact::new("urn:asleep"), erroring("asleep"));
@@ -361,6 +377,27 @@ fn the_index_lists_the_catalog() {
     );
     let body = String::from_utf8(body).unwrap();
     assert!(body.contains("urn:hello"), "index was: {body}");
+}
+
+/// The repo section is the scan ∪ the catalog's browse roots: rows the
+/// catalog backs (a `urn:repo:{name}:tree` binding) wear the badge, scan-only
+/// rows render bare, and a mounted root the scan never saw still appears.
+#[test]
+fn the_index_badges_catalog_backed_browse_roots() {
+    let (_, _, body) = get("/");
+    let body = String::from_utf8(body).unwrap();
+    assert!(
+        body.contains("<li><a href=\"/browse/urn:repo:alpha:tree\"><code>alpha</code></a></li>"),
+        "scan-only row grew a badge or vanished; index was: {body}"
+    );
+    assert!(
+        body.contains("<code>beta</code></a> <span class=\"index-badge\">browsable</span>"),
+        "mounted scan row is unbadged; index was: {body}"
+    );
+    assert!(
+        body.contains("<code>folio</code></a> <span class=\"index-badge\">browsable</span>"),
+        "root outside the scan is missing; index was: {body}"
+    );
 }
 
 #[test]
