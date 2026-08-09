@@ -588,6 +588,7 @@ fn browse_shell(start: &str, posture: Posture) -> Resp {
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
          <title>{start}</title>\
          <script src=\"/htmx.min.js\"></script>\
+         <link rel=\"stylesheet\" href=\"/k/source urn:repo:style\">\
          <style>{BROWSE_CSS}{readonly_css}</style></head><body>\
          <main id=\"browse\" hx-get=\"/k/source {start} as=text/html\" \
          hx-trigger=\"load\" hx-swap=\"innerHTML\">loading {start}…</main>\
@@ -628,8 +629,8 @@ const BROWSE_CSS: &str = "\
  .browse-size{opacity:.6;font-size:.85em;margin-left:.5rem}\
  pre,code{font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;\
    overflow-x:auto}\
- .browse-code,.browse-pr-diff,pre:has(> code){color-scheme:light;\
-   background:#fff;color:#24292e;padding:.6rem .8rem;border-radius:6px}\
+ .browse-code,.browse-pr-diff,pre:has(> code){padding:.6rem .8rem;\
+   border-radius:6px}\
  .browse-annotate{margin:1rem 0;display:grid;gap:.4rem;max-width:32rem}\
  .browse-annotate input,.browse-annotate textarea{font:inherit;padding:.3rem}\
 ";
@@ -717,7 +718,9 @@ async fn index(kernel: &Kernel) -> Resp {
     }
     let body = format!(
         "<!doctype html><html><head><meta charset=\"utf-8\">\
-         <title>ikigai</title><style>{BROWSE_CSS}</style></head><body>\
+         <title>ikigai</title>\
+         <link rel=\"stylesheet\" href=\"/k/source urn:repo:style\">\
+         <style>{BROWSE_CSS}</style></head><body>\
          <h1>ikigai</h1>\
          <p>Resources this kernel serves. Open any <code>urn:*</code> as a path, \
          e.g. <code>/urn:repo:ikigai-core:tree</code>.</p>\
