@@ -19,8 +19,10 @@ ikigai-core = "0.1.54"
 # RemoteSpace/MountedRemote — the Resolver→Space adapters that let this process
 # compose the machine's peers (the dev server) behind IRI prefixes.
 ikigai-resolve = "0.1.10"
-# The IPC client transport: dial a Unix-socket peer (wire-v6 hello).
-ikigai-ipc = "0.1.10"
+# The IPC client transport: dial a Unix-socket peer (wire-v6 hello). 0.1.13 is
+# the true minimum: below it a resolver never redials, so a peer restart leaves
+# this process's mounted namespace dead until the process itself restarts.
+ikigai-ipc = "0.1.13"
 # The accept loop + per-connection tasks. Multi-thread because the forwarding
 # endpoints round-trip the wire SYNCHRONOUSLY (ikigai-resolve 0.1.10), each
 # in-flight request parks a worker thread.
