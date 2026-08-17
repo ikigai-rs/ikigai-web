@@ -1,12 +1,18 @@
 [package]
-name = "ikigai-web"
+# RENAMED from `ikigai-web` 2026-08-16, and the contest it was parked on is over:
+# ikigai-cli's `crates/ikigai-web` — the workspace's inbound-HTTP transport
+# library — published first and owns that name on crates.io (0.1.13). Two crates
+# cannot share it, so this one, the standalone SERVER, took a distinct name
+# rather than leaving a repo permanently unpublishable.
+#
+# The BINARY is deliberately still `ikigai-web` (see [[bin]]): every operational
+# reference on a machine names the binary, not the crate — the launchd plist's
+# ProgramArguments, its /tmp/ikigai-web.log paths, the installed ~/.cargo/bin
+# entry. Renaming the package alone kept the running daemon, the supervision and
+# the re-registration untouched.
+name = "ikigai-web-server"
 version = "0.3.1"
 edition = "2021"
-# NAME CONTESTED — do not publish without adjudication: ikigai-cli/crates/ikigai-web
-# (the workspace's inbound-HTTP transport crate, publish-enabled but not yet on
-# crates.io) claims the same name. Publishing either is Brian's action; this stays
-# unpublishable until the hub resolves which crate owns the name.
-publish = false
 description = "Browse an ikigai kernel from a web browser: an HTTP face over a kernel composed from the machine's normal config-home mounts. Loopback by default (GET→Source, HEAD→Exists, one POST route: annotation minting); a non-loopback bind (web.bind/--bind) serves read-only — the write surface is disabled, not gated. Accept↔conneg; typed errors→status codes. Plus /sparql: a read-only, content-negotiated SPARQL face with a same-origin editor page."
 license = "MIT OR Apache-2.0"
 authors = ["Brian Sletten <brian.sletten@gmail.com>"]
