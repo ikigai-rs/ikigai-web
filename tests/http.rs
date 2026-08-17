@@ -154,9 +154,9 @@ fn spawn(bind_ip: &str) -> std::net::SocketAddr {
             .build()
             .unwrap();
         runtime.block_on(async move {
-            let listener = ikigai_web::serve::bind(addr).await.unwrap();
+            let listener = ikigai_web_server::serve::bind(addr).await.unwrap();
             tx.send(listener.local_addr().unwrap()).unwrap();
-            ikigai_web::serve::serve(Arc::new(test_kernel()), listener).await
+            ikigai_web_server::serve::serve(Arc::new(test_kernel()), listener).await
         })
     });
     rx.recv().unwrap()
@@ -487,7 +487,7 @@ fn browse_shell_hosts_the_faces() {
 /// endpoint's default face: sparql-results+json, routed by query form.
 #[test]
 fn sparql_get_executes_with_the_default_json_face() {
-    let query = ikigai_web::sparql::urlencode("SELECT ?s WHERE { ?s ?p ?o }");
+    let query = ikigai_web_server::sparql::urlencode("SELECT ?s WHERE { ?s ?p ?o }");
     let (status, headers, body) = get(&format!("/sparql?query={query}"));
     assert_eq!(status, 200);
     assert_eq!(
@@ -502,7 +502,7 @@ fn sparql_get_executes_with_the_default_json_face() {
 /// `urn:sparql:ask`; CONSTRUCT comes back as Turtle.
 #[test]
 fn sparql_conneg_selects_faces_and_forms_route() {
-    let query = ikigai_web::sparql::urlencode("ASK { ?s ?p ?o }");
+    let query = ikigai_web_server::sparql::urlencode("ASK { ?s ?p ?o }");
     let (status, headers, body) = roundtrip(&format!(
         "GET /sparql?query={query} HTTP/1.1\r\nHost: t\r\nAccept: text/csv\r\n\r\n"
     ));
@@ -513,7 +513,7 @@ fn sparql_conneg_selects_faces_and_forms_route() {
     );
     assert_eq!(body, b"true");
 
-    let query = ikigai_web::sparql::urlencode("CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }");
+    let query = ikigai_web_server::sparql::urlencode("CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }");
     let (status, headers, body) = get(&format!("/sparql?query={query}"));
     assert_eq!(status, 200);
     assert_eq!(
@@ -527,7 +527,7 @@ fn sparql_conneg_selects_faces_and_forms_route() {
 /// raw-face links depend on this.
 #[test]
 fn sparql_explicit_as_wins_over_accept() {
-    let query = ikigai_web::sparql::urlencode("SELECT ?s WHERE { ?s ?p ?o }");
+    let query = ikigai_web_server::sparql::urlencode("SELECT ?s WHERE { ?s ?p ?o }");
     let (status, headers, _) = roundtrip(&format!(
         "GET /sparql?query={query}&as=text/csv HTTP/1.1\r\nHost: t\r\nAccept: text/html\r\n\r\n"
     ));
@@ -555,7 +555,7 @@ fn sparql_post_bodies_carry_the_query() {
         Some("application/sparql-results+json")
     );
 
-    let form = format!("query={}", ikigai_web::sparql::urlencode(query));
+    let form = format!("query={}", ikigai_web_server::sparql::urlencode(query));
     let (status, _, body) = roundtrip(&format!(
         "POST /sparql HTTP/1.1\r\nHost: t\r\n\
          Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{form}",
@@ -572,7 +572,7 @@ fn sparql_update_forms_are_refused() {
         "INSERT DATA { <urn:x> <urn:p> 1 }",
         "DELETE WHERE { ?s ?p ?o }",
     ] {
-        let query = ikigai_web::sparql::urlencode(update);
+        let query = ikigai_web_server::sparql::urlencode(update);
         let (status, _, body) = get(&format!("/sparql?query={query}"));
         assert_eq!(status, 400);
         let body = String::from_utf8(body).unwrap();
@@ -589,7 +589,7 @@ fn sparql_update_forms_are_refused() {
 #[test]
 fn sparql_editor_page_prefills_and_renders_results() {
     let query = "SELECT ?s WHERE { ?s ?p ?o } # <tag> & \"quotes\"";
-    let encoded = ikigai_web::sparql::urlencode(query);
+    let encoded = ikigai_web_server::sparql::urlencode(query);
     let (status, headers, body) = roundtrip(&format!(
         "GET /sparql?query={encoded} HTTP/1.1\r\nHost: t\r\nAccept: text/html\r\n\r\n"
     ));
@@ -615,11 +615,11 @@ fn sparql_editor_page_prefills_and_renders_results() {
     );
     assert!(body.contains("hi\nthere"), "page was: {body}");
     // Sidebar: all eight samples, each with a byte-exact click-to-fill href.
-    for sample in ikigai_web::sparql::samples() {
+    for sample in ikigai_web_server::sparql::samples() {
         assert!(body.contains(sample.title), "missing: {}", sample.title);
         let href = format!(
             "/sparql?query={}",
-            ikigai_web::sparql::urlencode(&sample.query())
+            ikigai_web_server::sparql::urlencode(&sample.query())
         );
         assert!(body.contains(&href), "missing href for: {}", sample.title);
     }
@@ -637,7 +637,7 @@ fn sparql_editor_page_handles_empty_and_bad_queries() {
     assert_eq!(status, 200);
     assert!(String::from_utf8(body).unwrap().contains("<textarea"));
 
-    let query = ikigai_web::sparql::urlencode("DROP GRAPH <urn:g>");
+    let query = ikigai_web_server::sparql::urlencode("DROP GRAPH <urn:g>");
     let (status, _, body) = roundtrip(&format!(
         "GET /sparql?query={query} HTTP/1.1\r\nHost: t\r\nAccept: text/html\r\n\r\n"
     ));
@@ -722,7 +722,7 @@ fn readonly_bind_still_reads() {
         Some("application/sparql-results+json")
     );
     // /sparql stays read-only by its own construction: update forms refuse.
-    let update = ikigai_web::sparql::urlencode("INSERT DATA { <urn:x> <urn:p> 1 }");
+    let update = ikigai_web_server::sparql::urlencode("INSERT DATA { <urn:x> <urn:p> 1 }");
     let (status, _, _) = roundtrip_at(
         addr,
         &format!("GET /sparql?query={update} HTTP/1.1\r\nHost: t\r\n\r\n"),
