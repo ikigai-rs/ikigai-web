@@ -10,7 +10,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use ikigai_core::{ArgRef, Capability, Error, Expiry, Iri, Kernel, Request, Verb};
+use ikigai_core::{ArgRef, Capability, Error, Expiry, Iri, Kernel, Representation, Request, Verb};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -258,9 +258,25 @@ pub fn accept_face(accept: &str) -> Option<&'static str> {
     None
 }
 
-/// Project a representation's expiry onto `Cache-Control`, honestly:
-/// uncacheable → `no-store`; a deadline → `max-age`; permanent → `immutable`.
-/// There is no ETag until golden-thread validity crosses the wire (crate doc).
+/// Project a representation's expiry onto `Cache-Control` — noting that the
+/// two caching models do NOT line up one-to-one.
+///
+/// - `Always` → `no-store`. Uncacheable is uncacheable in either model.
+/// - `At(t)` → `max-age`. A deadline is a deadline.
+/// - `Never` → `public, no-cache`. **Not `immutable`.** Kernel `Never` means
+///   "a pure function of its inputs — safe to cache and reuse"; it says
+///   nothing about the URL. HTTP `immutable` means "the bytes AT THIS URL will
+///   never change, so do not revalidate, ever" — true only of content-addressed
+///   or fingerprinted URLs. `urn:repo:style` is a STABLE url whose content
+///   genuinely changes (with `a11y.toml`, with the theme, with the crate
+///   version), and it is exactly the case `immutable` must not be applied to:
+///   every correct server-side change was invisible in a browser short of a
+///   hard reload, which is the bug this projection caused.
+///
+/// `no-cache` is not `no-store`: a cache may still keep the bytes, it just has
+/// to revalidate before reuse — and with the [`etag_of`] validator below that
+/// revalidation is a bodyless `304`, so the bandwidth `immutable` was buying
+/// is mostly still bought, honestly this time.
 pub fn cache_control(expiry: Expiry) -> String {
     match expiry {
         Expiry::Always => "no-store".to_string(),
@@ -272,7 +288,86 @@ pub fn cache_control(expiry: Expiry) -> String {
             let secs = deadline.as_millis().saturating_sub(now) / 1000;
             format!("max-age={secs}")
         }
-        Expiry::Never => "public, max-age=31536000, immutable".to_string(),
+        Expiry::Never => "public, no-cache".to_string(),
+    }
+}
+
+/// The strong `ETag` for a representation: its content address, quoted.
+///
+/// `Representation::content_id` is BLAKE3 over the representation's TYPE and
+/// its BYTES, so two faces of one resource (`text/html` vs `text/turtle`) carry
+/// DIFFERENT tags — which is what makes `Vary: Accept` sufficient rather than
+/// merely hopeful.
+///
+/// Deliberately not derived from golden threads. A representation's thread set
+/// is `#[serde(skip)]` and kernel-local, so it does not cross a mount, and this
+/// process serves nearly everything from a REMOTE peer over IPC: a
+/// thread-derived validator would be correct in a test kernel and silently
+/// degrade to "no dependencies" on the machine that matters. Bytes are bytes on
+/// both sides of a wire.
+pub fn etag_of(repr: &Representation) -> String {
+    format!("\"{}\"", repr.content_id())
+}
+
+/// Does an `If-None-Match` header list the tag we would serve?
+///
+/// The comparison is WEAK (RFC 9110 §13.1.2 — `If-None-Match` always compares
+/// weakly), so `W/"x"` matches `"x"`; `*` matches any existing representation.
+pub fn if_none_match_hits(header: &str, etag: &str) -> bool {
+    let bare = |tag: &str| tag.trim().trim_start_matches("W/").to_string();
+    let ours = bare(etag);
+    header
+        .split(',')
+        .any(|candidate| candidate.trim() == "*" || bare(candidate) == ours)
+}
+
+/// Project a resolved representation onto a response: negotiated
+/// `Content-Type`, the `Cache-Control` its expiry earns, a strong `ETag`, and
+/// `Vary: Accept` — collapsing to a bodyless `304` when the client already
+/// holds exactly this content.
+///
+/// `Vary: Accept` because this face IS content-negotiated: one URL serves
+/// different bytes per `Accept`, and without the header a shared cache may hand
+/// a browser the Turtle face it stored for curl. `as=` selects a face too, but
+/// it lives in the URL, which every cache already keys on — `Vary` names header
+/// fields, and there is nothing for `as=` to name. (An explicit `as=` also
+/// makes the response independent of `Accept`; the header is then merely
+/// conservative, costing a little cache reuse and no correctness.)
+///
+/// The validator rides on `no-store` responses too. It buys nothing there (a
+/// client was told not to store the body), but the alternative is a second
+/// rule about when a tag appears, and uniformity is worth more than the header.
+pub(crate) fn source_resp(req: &HttpRequest, repr: Representation) -> Resp {
+    let etag = etag_of(&repr);
+    let cache = cache_control(repr.expiry);
+    let fresh = req
+        .header("if-none-match")
+        .is_some_and(|header| if_none_match_hits(header, &etag));
+    if fresh {
+        // RFC 9110 §15.4.5: a 304 carries the fields that govern CACHING —
+        // `Cache-Control`, the validator, `Vary` — and no body. No
+        // `Content-Type`: there is no content here to type.
+        return Resp {
+            status: 304,
+            headers: vec![
+                ("Cache-Control".to_string(), cache),
+                ("ETag".to_string(), etag),
+                ("Vary".to_string(), "Accept".to_string()),
+            ],
+            body: Vec::new(),
+            suppress_body: true,
+        };
+    }
+    Resp {
+        status: 200,
+        headers: vec![
+            ("Content-Type".to_string(), content_type(&repr.repr_type)),
+            ("Cache-Control".to_string(), cache),
+            ("ETag".to_string(), etag),
+            ("Vary".to_string(), "Accept".to_string()),
+        ],
+        body: repr.bytes,
+        suppress_body: false,
     }
 }
 
@@ -367,18 +462,7 @@ async fn get(kernel: &Kernel, req: &HttpRequest, target: Iri) -> Resp {
         }
     }
     match kernel.issue(request, &Capability::root()).await {
-        Ok(repr) => {
-            let headers = vec![
-                ("Content-Type".to_string(), content_type(&repr.repr_type)),
-                ("Cache-Control".to_string(), cache_control(repr.expiry)),
-            ];
-            Resp {
-                status: 200,
-                headers,
-                body: repr.bytes,
-                suppress_body: false,
-            }
-        }
+        Ok(repr) => source_resp(req, repr),
         Err(e) => error_resp(status_of(&e), &e.to_string()),
     }
 }
@@ -489,15 +573,7 @@ async fn k_command(kernel: &Kernel, req: &HttpRequest, command: String) -> Resp 
                 request = request.with_arg(k, ArgRef::Inline(v.into_bytes()));
             }
             match kernel.issue(request, &Capability::root()).await {
-                Ok(repr) => Resp {
-                    status: 200,
-                    headers: vec![
-                        ("Content-Type".to_string(), content_type(&repr.repr_type)),
-                        ("Cache-Control".to_string(), cache_control(repr.expiry)),
-                    ],
-                    body: repr.bytes,
-                    suppress_body: false,
-                },
+                Ok(repr) => source_resp(req, repr),
                 Err(e) => error_resp(status_of(&e), &e.to_string()),
             }
         }
@@ -766,6 +842,7 @@ pub fn content_type(repr_type: &ikigai_core::ReprType) -> String {
 fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        304 => "Not Modified",
         400 => "Bad Request",
         403 => "Forbidden",
         404 => "Not Found",
@@ -785,7 +862,12 @@ async fn write_response(stream: &mut TcpStream, resp: Resp) -> std::io::Result<(
     for (name, value) in &resp.headers {
         head.push_str(&format!("{name}: {value}\r\n"));
     }
-    head.push_str(&format!("Content-Length: {}\r\n", resp.body.len()));
+    // A 304 is not a zero-length body, it is NO body — announcing
+    // `Content-Length: 0` on one misleads a cache about the stored response it
+    // is being told to reuse.
+    if resp.status != 304 {
+        head.push_str(&format!("Content-Length: {}\r\n", resp.body.len()));
+    }
     head.push_str("X-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n");
     stream.write_all(head.as_bytes()).await?;
     if !resp.suppress_body {
@@ -826,10 +908,8 @@ mod tests {
     #[test]
     fn expiry_projects_to_cache_control() {
         assert_eq!(cache_control(Expiry::Always), "no-store");
-        assert_eq!(
-            cache_control(Expiry::Never),
-            "public, max-age=31536000, immutable"
-        );
+        // Kernel-permanent is NOT url-immutable: revalidate, cheaply.
+        assert_eq!(cache_control(Expiry::Never), "public, no-cache");
         let soon = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -837,6 +917,27 @@ mod tests {
             + 60_000;
         let header = cache_control(Expiry::At(ikigai_core::Time::from_millis(soon)));
         assert!(header.starts_with("max-age=5") || header.starts_with("max-age=60"));
+    }
+
+    #[test]
+    fn faces_of_one_resource_carry_different_etags() {
+        let html = Representation::new(ikigai_core::ReprType::new("text/html"), "hi".to_string());
+        let text = Representation::new(ikigai_core::ReprType::new("text/plain"), "hi".to_string());
+        assert!(etag_of(&html).starts_with("\"b3:"));
+        assert!(etag_of(&html).ends_with('"'));
+        // Same bytes, different type — the tag has to move, or conneg lies.
+        assert_ne!(etag_of(&html), etag_of(&text));
+    }
+
+    #[test]
+    fn if_none_match_compares_weakly_and_honours_star() {
+        let tag = "\"b3:abc\"";
+        assert!(if_none_match_hits(tag, tag));
+        assert!(if_none_match_hits("W/\"b3:abc\"", tag));
+        assert!(if_none_match_hits("*", tag));
+        assert!(if_none_match_hits("\"b3:zzz\", \"b3:abc\"", tag));
+        assert!(!if_none_match_hits("\"b3:zzz\"", tag));
+        assert!(!if_none_match_hits("", tag));
     }
 
     #[test]

@@ -75,16 +75,38 @@
 //! other query arguments pass through as invocation args
 //! (`?annotations=include`).
 //!
-//! ## Caching — honest, and therefore thin (v1)
+//! ## Caching — revalidate, don't promise
 //!
 //! `Cache-Control` projects the representation's own `Expiry`: `Always` →
-//! `no-store`, `At(t)` → `max-age`, `Never` → `immutable`. There is **no
-//! ETag**: the golden-thread validity token (a representation's thread set +
-//! the kernel's cut generations) is kernel-local by design — threads are
-//! `#[serde(skip)]` and never cross a wire mount — so for resources served
-//! over the machine's mounts this edge holds no validity to surface, and a
-//! content-hash ETag would fake freshness the kernel never asserted. When
-//! validity crosses the wire, the ETag lands here.
+//! `no-store`, `At(t)` → `max-age`, `Never` → `public, no-cache`.
+//!
+//! That last one is **not** `immutable`, and the difference is a category
+//! error worth naming. Kernel `Expiry::Never` means "a pure function of its
+//! inputs — safe to cache and reuse"; it says nothing about the URL. HTTP
+//! `immutable` means "the bytes AT THIS URL will never change; do not
+//! revalidate". `urn:repo:style` is a stable URL whose content genuinely
+//! changes — with `a11y.toml`, with the theme, with the crate version — so
+//! `immutable` was a promise it could not keep: a stylesheet change that was
+//! demonstrably on the wire stayed invisible in the browser at every normal
+//! reload. Correct in the kernel does not survive translation into a different
+//! caching model unchanged.
+//!
+//! Every conneg'd read (`GET /{uri}`, `/k/source`, `/sparql`) therefore carries
+//! a **strong `ETag`** — `Representation::content_id()`, BLAKE3 over the
+//! representation's type and bytes, rendered `"b3:<hex>"` — and honours
+//! `If-None-Match` with a bodyless `304`. The validator is deliberately
+//! content-derived rather than golden-thread-derived: thread sets are
+//! `#[serde(skip)]` and kernel-local, so they do not cross a wire mount, and
+//! this process serves nearly everything from a mounted peer. A thread-derived
+//! validator would be right in-process and silently degrade over IPC; bytes are
+//! bytes on both sides. When validity DOES cross the wire it can strengthen
+//! this (a mounted peer could then answer "unchanged" without re-sending bytes
+//! to us), but it is no longer a precondition for an ETag at the edge.
+//!
+//! `Vary: Accept` rides along, because these faces really do serve different
+//! bytes per `Accept` and `content_id` hashes the repr type, so the tags
+//! already differ per face. `HEAD` is exempt: it maps to `Exists`, an existence
+//! probe with no representation to validate.
 
 pub mod config;
 pub mod mounts;

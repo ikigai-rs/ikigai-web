@@ -80,11 +80,19 @@ too; body fields win on collision.
 `Timeout` → 504.
 
 **Caching:** `Cache-Control` projects the representation's own `Expiry`
-(`Always` → `no-store`, `At` → `max-age`, `Never` → `immutable`). There is
-deliberately **no ETag**: the golden-thread validity token is kernel-local by
-design (threads never cross a wire mount), so for mounted resources this edge
-holds no validity to surface — and a content-hash ETag would fake freshness the
-kernel never asserted. When validity crosses the wire, the ETag lands here.
+(`Always` → `no-store`, `At` → `max-age`, `Never` → `public, no-cache`).
+`Never` is deliberately **not** `immutable`: the kernel means "pure function of
+its inputs", HTTP means "the bytes at this URL will never change", and
+`urn:repo:style` is a stable URL whose content really does change (`a11y.toml`,
+theme, crate version) — `immutable` made correct server-side changes invisible
+short of a hard reload.
+
+Conneg'd reads carry a strong **`ETag`** (`Representation::content_id()` —
+BLAKE3 over the representation's type and bytes, `"b3:<hex>"`) and honour
+`If-None-Match` with a bodyless `304`, plus `Vary: Accept`. The validator is
+content-derived, not golden-thread-derived: thread sets are kernel-local and
+never cross a wire mount, so a thread-derived tag would be right in-process and
+silently degrade over IPC.
 
 ## /sparql — the SPARQL face
 

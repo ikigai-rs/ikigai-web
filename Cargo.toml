@@ -11,7 +11,7 @@
 # entry. Renaming the package alone kept the running daemon, the supervision and
 # the re-registration untouched.
 name = "ikigai-web-server"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 description = "Browse an ikigai kernel from a web browser: an HTTP face over a kernel composed from the machine's normal config-home mounts. Loopback by default (GET→Source, HEAD→Exists, one POST route: annotation minting); a non-loopback bind (web.bind/--bind) serves read-only — the write surface is disabled, not gated. Accept↔conneg; typed errors→status codes. Plus /sparql: a read-only, content-negotiated SPARQL face with a same-origin editor page."
 license = "MIT OR Apache-2.0"

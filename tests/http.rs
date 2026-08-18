@@ -286,15 +286,100 @@ fn percent_encoded_paths_decode() {
     assert_eq!(status, 200);
 }
 
+/// A kernel-permanent representation is cacheable, NOT url-immutable: the
+/// stylesheet is the standing counterexample — a stable URL whose content
+/// changes with `a11y.toml`. `immutable` hid every such change from a browser
+/// short of a hard reload; `no-cache` + a validator does not.
 #[test]
-fn cacheable_representations_project_immutable() {
+fn cacheable_representations_revalidate_rather_than_promise_immutability() {
     let (_, headers, _) = get("/urn:pure");
-    assert_eq!(
-        header(&headers, "cache-control"),
-        Some("public, max-age=31536000, immutable")
+    assert_eq!(header(&headers, "cache-control"), Some("public, no-cache"));
+    let etag = header(&headers, "etag").expect("a strong ETag");
+    assert!(
+        etag.starts_with("\"b3:") && etag.ends_with('"'),
+        "etag: {etag}"
     );
-    // No ETag until golden-thread validity crosses the wire (see crate doc).
-    assert_eq!(header(&headers, "etag"), None);
+    assert_eq!(header(&headers, "vary"), Some("Accept"));
+}
+
+#[test]
+fn a_matching_if_none_match_gets_a_bodyless_304() {
+    let (_, headers, body) = get("/urn:pure");
+    let etag = header(&headers, "etag").unwrap().to_string();
+    assert!(!body.is_empty());
+
+    let (status, headers, body) = roundtrip(&format!(
+        "GET /urn:pure HTTP/1.1\r\nHost: t\r\nIf-None-Match: {etag}\r\n\r\n"
+    ));
+    assert_eq!(status, 304);
+    assert!(body.is_empty(), "a 304 carries no body");
+    // The 304 still carries the validator and the caching directive — a cache
+    // that reuses the stored body needs both.
+    assert_eq!(header(&headers, "etag"), Some(etag.as_str()));
+    assert_eq!(header(&headers, "cache-control"), Some("public, no-cache"));
+    assert_eq!(header(&headers, "vary"), Some("Accept"));
+    assert_eq!(header(&headers, "content-length"), None);
+
+    // Weak comparison and `*` are both hits (RFC 9110 §13.1.2).
+    assert_eq!(
+        roundtrip(&format!(
+            "GET /urn:pure HTTP/1.1\r\nHost: t\r\nIf-None-Match: W/{etag}\r\n\r\n"
+        ))
+        .0,
+        304
+    );
+    assert_eq!(
+        roundtrip("GET /urn:pure HTTP/1.1\r\nHost: t\r\nIf-None-Match: *\r\n\r\n").0,
+        304
+    );
+}
+
+#[test]
+fn a_stale_if_none_match_gets_the_full_body() {
+    let (status, headers, body) = roundtrip(
+        "GET /urn:pure HTTP/1.1\r\nHost: t\r\n\
+         If-None-Match: \"b3:0000000000000000\"\r\n\r\n",
+    );
+    assert_eq!(status, 200);
+    assert_eq!(body, b"42");
+    assert!(header(&headers, "etag").unwrap().starts_with("\"b3:"));
+}
+
+/// `content_id` hashes the repr TYPE as well as the bytes, so the two faces of
+/// one resource cannot collide — which is what makes `Vary: Accept` safe
+/// rather than merely hopeful. Both faces here even carry different bytes; the
+/// point is that the tags move together with the face.
+#[test]
+fn two_faces_of_one_resource_carry_different_etags() {
+    let (_, html, _) = roundtrip("GET /urn:hello HTTP/1.1\r\nHost: t\r\nAccept: text/html\r\n\r\n");
+    let (_, turtle, _) =
+        roundtrip("GET /urn:hello HTTP/1.1\r\nHost: t\r\nAccept: text/turtle\r\n\r\n");
+    let html_tag = header(&html, "etag").unwrap();
+    let turtle_tag = header(&turtle, "etag").unwrap();
+    assert_ne!(html_tag, turtle_tag);
+    assert_eq!(header(&html, "vary"), Some("Accept"));
+    // And the HTML face's own tag does not validate the Turtle face.
+    let (status, _, _) = roundtrip(&format!(
+        "GET /urn:hello HTTP/1.1\r\nHost: t\r\nAccept: text/turtle\r\n\
+         If-None-Match: {html_tag}\r\n\r\n"
+    ));
+    assert_eq!(status, 200);
+}
+
+/// The stylesheet the browse shell links is fetched through the `/k/` adapter
+/// (`<link href="/k/source urn:repo:style">`) — the route the invisible-change
+/// bug actually travelled. It revalidates too.
+#[test]
+fn the_k_adapter_revalidates_like_the_direct_route() {
+    let (status, headers, _) = get("/k/source%20urn:pure");
+    assert_eq!(status, 200);
+    assert_eq!(header(&headers, "cache-control"), Some("public, no-cache"));
+    let etag = header(&headers, "etag").unwrap().to_string();
+    let (status, _, body) = roundtrip(&format!(
+        "GET /k/source%20urn:pure HTTP/1.1\r\nHost: t\r\nIf-None-Match: {etag}\r\n\r\n"
+    ));
+    assert_eq!(status, 304);
+    assert!(body.is_empty());
 }
 
 #[test]
