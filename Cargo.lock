@@ -276,7 +276,7 @@ dependencies = [
 
 [[package]]
 name = "ikigai-web-server"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ikigai-core",
  "ikigai-ipc",

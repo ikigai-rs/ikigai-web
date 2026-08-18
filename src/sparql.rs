@@ -26,9 +26,7 @@
 
 use ikigai_core::{ArgRef, Capability, Iri, Kernel, Request, Verb};
 
-use crate::serve::{
-    cache_control, content_type, error_resp, html_escape, status_of, HttpRequest, Resp,
-};
+use crate::serve::{error_resp, html_escape, source_resp, status_of, HttpRequest, Resp};
 
 /// Dispatch `/sparql`. GET executes `?query=`; POST takes the query from a
 /// form body (`query=` field) or a raw body (`application/sparql-query`, or
@@ -82,15 +80,7 @@ pub(crate) async fn respond(kernel: &Kernel, req: &HttpRequest) -> Resp {
     };
     let as_arg = explicit_as.or_else(|| accepted.map(str::to_string));
     match execute(kernel, form, query, as_arg.as_deref()).await {
-        Ok(repr) => Resp {
-            status: 200,
-            headers: vec![
-                ("Content-Type".to_string(), content_type(&repr.repr_type)),
-                ("Cache-Control".to_string(), cache_control(repr.expiry)),
-            ],
-            body: repr.bytes,
-            suppress_body: false,
-        },
+        Ok(repr) => source_resp(req, repr),
         Err(e) => error_resp(status_of(&e), &e.to_string()),
     }
 }
