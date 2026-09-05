@@ -383,10 +383,49 @@ pub fn status_of(error: &Error) -> u16 {
     }
 }
 
-/// The one write route v1 exposes: annotation minting (`urn:annotation`) and
-/// slug-addressed annotation writes (`urn:annotation:{id}`).
+/// The roots of the one write route v1 exposes: annotation minting (the bare
+/// IRI) and slug-addressed annotation writes (`{root}:{id}`).
+///
+/// ★ BOTH spellings, deliberately, for the whole `urn:iki:` transition window.
+/// `ikigai-browse` 0.3.0 moved its bindings to `urn:iki:annotation:*`; older
+/// callers — pre-0.3.0 faces, bookmarked URLs, `curl` in someone's notes —
+/// still write `urn:annotation…`, and they are exactly who the window exists
+/// to protect.
+///
+/// ★★ This list must NOT be narrowed to the new name alone, and the reason is
+/// the most confusable fact in the migration: **a route gate sits OUTSIDE the
+/// kernel**. [`post_allowed`] inspects the raw request path before any
+/// resolution, so it sees **the name the caller wrote**, never the canonical
+/// one. That is the *opposite* direction from a mount line:
+/// `Kernel::with_aliases` wraps the root space, so **mounts sit INSIDE the
+/// alias** and see canonical names (a stale mount stops matching the moment
+/// the alias fires), while route gates see caller names and must accept every
+/// spelling still in flight. Get this backwards and you break one while
+/// "fixing" the other.
+///
+/// **What ends the window:** the `urn:annotation` entry goes when no reachable
+/// caller emits the old spelling any more — in practice, when every host on
+/// the machine has dropped its `urn:annotation:` alias rule. Until that is
+/// true this is not redundancy to tidy away.
+const ANNOTATION_ROOTS: [&str; 2] = ["urn:annotation", "urn:iki:annotation"];
+
+/// The one write route v1 exposes: annotation minting and slug-addressed
+/// annotation writes, under either spelling in [`ANNOTATION_ROOTS`].
+///
+/// The family test is COLON-ANCHORED for every root: `urn:annotationx` and
+/// `urn:iki:annotationx` are different resources and neither is a write route
+/// here. A `starts_with(root)` that forgot the colon would silently widen the
+/// only write surface this server has.
 fn post_allowed(uri: &str) -> bool {
-    uri == "urn:annotation" || uri.starts_with("urn:annotation:")
+    ANNOTATION_ROOTS
+        .iter()
+        .any(|root| match uri.strip_prefix(root) {
+            // The bare mint IRI.
+            Some("") => true,
+            // The slug family — and only across a colon.
+            Some(rest) => rest.starts_with(':'),
+            None => false,
+        })
 }
 
 /// Dispatch one parsed request against the kernel.
@@ -495,7 +534,8 @@ async fn post(kernel: &Kernel, req: &HttpRequest, target: Iri) -> Resp {
     if !post_allowed(uri) {
         let mut resp = error_resp(
             405,
-            "v1 accepts POST only for annotation minting (/urn:annotation)",
+            "v1 accepts POST only for annotation minting \
+             (/urn:iki:annotation…, or the legacy /urn:annotation…)",
         );
         resp.headers
             .push(("Allow".to_string(), "GET, HEAD".to_string()));
@@ -546,11 +586,13 @@ async fn post(kernel: &Kernel, req: &HttpRequest, target: Iri) -> Resp {
 
 /// The `/k/` HOST ADAPTER the browse family's HTML faces are authored against:
 /// every affordance they emit is `hx-get="/k/source <iri> [k=v ...]"` or
-/// `hx-post="/k/sink urn:annotation"` (see `ikigai-browse`, which calls this
-/// "the HOST's /k/ adapter"). The command is REPL-ish but deliberately tiny:
-/// `source` (GET) and `sink` (POST, annotation family only — the same one
-/// write route as POST `/urn:annotation…`). Nothing else; the adapter never
-/// widens the face's verb surface.
+/// `hx-post="/k/sink urn:iki:annotation"` (see `ikigai-browse`, which calls
+/// this "the HOST's /k/ adapter"). The command is REPL-ish but deliberately
+/// tiny: `source` (GET) and `sink` (POST, annotation family only — the same
+/// one write route as POST `/urn:iki:annotation…`, and, for the transition
+/// window, the legacy `urn:annotation…` spelling too; see
+/// [`ANNOTATION_ROOTS`]). Nothing else; the adapter never widens the face's
+/// verb surface.
 async fn k_command(kernel: &Kernel, req: &HttpRequest, command: String) -> Resp {
     let mut tokens = command.split_whitespace();
     let (Some(verb_word), Some(iri)) = (tokens.next(), tokens.next()) else {
@@ -581,7 +623,8 @@ async fn k_command(kernel: &Kernel, req: &HttpRequest, command: String) -> Resp 
             if !post_allowed(target.as_str()) {
                 return error_resp(
                     405,
-                    "v1 accepts sink only for the annotation family (urn:annotation…)",
+                    "v1 accepts sink only for the annotation family \
+                     (urn:iki:annotation…, or the legacy urn:annotation…)",
                 );
             }
             // The command's own k=v args, then the form fields (which win).
@@ -968,9 +1011,22 @@ mod tests {
 
     #[test]
     fn the_write_surface_is_exactly_the_annotation_family() {
+        // The canonical spelling (ikigai-browse 0.3.0+).
+        assert!(post_allowed("urn:iki:annotation"));
+        assert!(post_allowed("urn:iki:annotation:abc-123"));
+        // The legacy spelling, still accepted for the transition window — a
+        // route gate sees the CALLER's name, so narrowing to the new one alone
+        // would reject exactly the callers the window protects.
         assert!(post_allowed("urn:annotation"));
         assert!(post_allowed("urn:annotation:abc-123"));
+        // ★ Colon-anchored for BOTH roots. A `starts_with(root)` that dropped
+        // the colon would make these write routes, silently widening the only
+        // write surface this server has.
         assert!(!post_allowed("urn:annotationx"));
+        assert!(!post_allowed("urn:iki:annotationx"));
+        assert!(!post_allowed("urn:iki:annotations:abc"));
+        // Nor does the `urn:iki:` root open anything else up.
+        assert!(!post_allowed("urn:iki:repo:ikigai-core:tree"));
         assert!(!post_allowed("urn:repo:ikigai-core:tree"));
         assert!(!post_allowed("urn:kernel:cut"));
     }

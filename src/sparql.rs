@@ -723,8 +723,8 @@ mod tests {
     fn tsv_terms_render_for_humans() {
         // urn: IRIs link back into this server's own address space.
         assert_eq!(
-            term_html("<urn:annotation:x>"),
-            "<a href=\"/urn:annotation:x\"><code>urn:annotation:x</code></a>"
+            term_html("<urn:iki:annotation:x>"),
+            "<a href=\"/urn:iki:annotation:x\"><code>urn:iki:annotation:x</code></a>"
         );
         assert_eq!(term_html("<http://ex/y>"), "<code>http://ex/y</code>");
         // Literals lose transport escapes; language tags stay visible.
