@@ -46,9 +46,13 @@
 //! - `GET {uri}` → `Source`
 //! - `HEAD {uri}` → `Exists` (200 with no body when the resource reports
 //!   `true`, 404 when `false`)
-//! - `POST /urn:annotation[:{id}]` → `Sink` — the ONE write route v1 exposes,
-//!   because the browse annotation overlay needs it. Form-encoded bodies map
-//!   to invocation args; any other body arrives as the piped `content`.
+//! - `POST /urn:iki:annotation[:{id}]` → `Sink` — the ONE write route v1
+//!   exposes, because the browse annotation overlay needs it. Form-encoded
+//!   bodies map to invocation args; any other body arrives as the piped
+//!   `content`. The pre-`urn:iki:` spelling `POST /urn:annotation[:{id}]` is
+//!   accepted too, for the whole migration window: this route gate sits
+//!   OUTSIDE the kernel and sees the CALLER's name, never the canonical one
+//!   (see `serve::ANNOTATION_ROOTS` for why, and for what ends the window).
 //! - `GET`/`POST /sparql` → `Source` on `urn:sparql:{select|ask|construct|
 //!   describe}` — the content-negotiated SPARQL face (see [`sparql`]). POST
 //!   here carries a long QUERY, not a write: execution is always `Source`,
@@ -59,7 +63,7 @@
 //!
 //! The browse family's HTML faces are authored against a HOST adapter: their
 //! affordances are `hx-get="/k/source <iri> [k=v ...]"` and
-//! `hx-post="/k/sink urn:annotation"`. This server IS that host: `/k/` speaks
+//! `hx-post="/k/sink urn:iki:annotation"`. This server IS that host: `/k/` speaks
 //! exactly `source` (GET) and `sink` (POST, annotation family only — the same
 //! single write route), and `/browse/{uri}` serves the shell page (vendored
 //! htmx, `#browse` target, minimal styling) that makes the faces clickable.

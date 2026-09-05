@@ -125,6 +125,22 @@ fn test_kernel() -> Kernel {
     let space = ikigai_core::EndpointSpace::new()
         .bind(Exact::new("urn:hello"), hello())
         .bind(Exact::new("urn:pure"), pure())
+        // ★ The annotation family, bound under BOTH spellings — and these are
+        // NOT arbitrary fixture names that happened to borrow another repo's
+        // namespace (the `hello-camel` / `urn:fn:toCamel` trap). This server's
+        // single write route is namespace-specific BY CONTRACT
+        // (`serve::ANNOTATION_ROOTS`), so a test of that route has to name the
+        // real family or it tests nothing.
+        //
+        // Both spellings, for two reasons. It proves the transition window
+        // end-to-end — an old-spelling caller and a new-spelling caller both
+        // reach `Sink` through the real route — and it makes these bindings
+        // alias-PROOF: should anything ever wrap this kernel in a
+        // `Kernel::with_aliases` table, `urn:annotation…` rewrites to
+        // `urn:iki:annotation…`, which is bound here, instead of to a name
+        // nothing binds. Binding only the legacy pair was the latent break.
+        .bind(Exact::new("urn:iki:annotation"), annotation())
+        .bind(Exact::new("urn:iki:annotation:abc"), annotation())
         .bind(Exact::new("urn:annotation"), annotation())
         .bind(Exact::new("urn:annotation:abc"), annotation())
         .bind(Exact::new("urn:sparql:select"), sparql_stub("select"))
@@ -434,6 +450,51 @@ fn post_raw_body_arrives_as_piped_content() {
         body.contains("target=urn:repo:x:file:a.rs"),
         "body was: {body}"
     );
+}
+
+/// ★ The transition window, proven at the route rather than asserted: BOTH
+/// spellings of the annotation family reach `Sink` through both write routes.
+///
+/// This gate sits OUTSIDE the kernel — it reads the raw request path before
+/// any resolution, so it sees the name the CALLER wrote. `ikigai-browse`
+/// 0.3.0 binds `urn:iki:annotation:*`; pre-0.3.0 faces, bookmarks and hand-
+/// written `curl` lines still emit `urn:annotation…`. Both must work until the
+/// old spelling has no reachable callers left.
+#[test]
+fn both_annotation_spellings_reach_the_sink() {
+    let form = "target=urn%3Arepo%3Ax%3Afile%3Aa.rs&body=note&exact=let";
+    for path in [
+        "/urn:iki:annotation",
+        "/urn:iki:annotation:abc",
+        "/urn:annotation",
+        "/urn:annotation:abc",
+        "/k/sink%20urn:iki:annotation",
+        "/k/sink%20urn:annotation",
+    ] {
+        let (status, _, body) = roundtrip(&format!(
+            "POST {path} HTTP/1.1\r\nHost: t\r\n\
+             Content-Type: application/x-www-form-urlencoded\r\n\
+             Content-Length: {}\r\n\r\n{form}",
+            form.len()
+        ));
+        assert_eq!(status, 200, "for {path}");
+        let body = String::from_utf8(body).unwrap();
+        assert!(body.contains("body=note"), "for {path}, body was: {body}");
+    }
+}
+
+/// The widening is COLON-ANCHORED under the new root too. `urn:iki:annotationx`
+/// is a different resource, and a sloppy `starts_with("urn:iki:annotation")`
+/// would have turned it into a write route.
+#[test]
+fn the_new_root_is_colon_anchored_at_the_route() {
+    for path in ["/urn:annotationx", "/urn:iki:annotationx", "/urn:iki:hello"] {
+        let (status, headers, _) = roundtrip(&format!(
+            "POST {path} HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n\r\n"
+        ));
+        assert_eq!(status, 405, "for {path}");
+        assert_eq!(header(&headers, "allow"), Some("GET, HEAD"), "for {path}");
+    }
 }
 
 #[test]
@@ -751,7 +812,12 @@ fn sparql_rejects_other_methods() {
 fn readonly_bind_disables_the_write_surface() {
     let addr = readonly_addr();
     let form = "target=urn%3Arepo%3Ax%3Afile%3Aa.rs&body=note&exact=let";
-    for path in ["/urn:annotation", "/k/sink%20urn:annotation"] {
+    for path in [
+        "/urn:iki:annotation",
+        "/k/sink%20urn:iki:annotation",
+        "/urn:annotation",
+        "/k/sink%20urn:annotation",
+    ] {
         let (status, headers, body) = roundtrip_at(
             addr,
             &format!(

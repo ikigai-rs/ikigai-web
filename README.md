@@ -32,9 +32,10 @@ peercred-authenticated local client — exactly what it grants the CLI.
 A non-loopback bind (`web.bind = "0.0.0.0:8642"`, or `--bind 0.0.0.0:8642`)
 serves **read-only**: one gate ahead of all dispatch refuses everything that
 is not GET/HEAD with a 403, so the write surface — the annotation Sink, in
-both its `POST /urn:annotation…` and `/k/sink` spellings — is *gone*, not
-gated per-route. The exception is `POST /sparql`, whose body is a query (that
-face is read-only by its own construction and rejects update forms itself).
+both its `POST /urn:iki:annotation…` and `/k/sink` spellings, and under the
+legacy `urn:annotation…` name too — is *gone*, not gated per-route. The
+exception is `POST /sparql`, whose body is a query (that face is read-only by
+its own construction and rejects update forms itself).
 The posture derives from the socket actually bound, inside `serve` itself; the
 startup line states it. The browse shell also stops offering the annotate form
 off loopback (presentation — the gate is the boundary).
@@ -52,12 +53,12 @@ sensitive mounts beyond loopback.
 |------|--------|
 | `GET /{uri}` | `Source` — query args pass through as invocation args (`?annotations=include`) |
 | `HEAD /{uri}` | `Exists` — 200 (no body) on `true`, 404 on `false` |
-| `POST /urn:annotation[:{id}]` | `Sink` — the one write route v1 exposes (annotation minting for the browse overlay) |
+| `POST /urn:iki:annotation[:{id}]` | `Sink` — the one write route v1 exposes (annotation minting for the browse overlay). The legacy `POST /urn:annotation[:{id}]` spelling is accepted too — see [The annotation route and the `urn:iki:` window](#the-annotation-route-and-the-urniki-window) |
 | `GET`/`POST /sparql` | `Source` on `urn:sparql:{form}` — the SPARQL face (below) |
 | `GET /` | index: browsable repos (via `urn:repo:list`) + the kernel catalog |
 | `GET /browse/{uri}` | the htmx shell page hosting the browse family's HTML faces |
 | `GET /k/source <iri> [k=v ...]` | the host adapter the faces' `hx-get` affordances target |
-| `POST /k/sink urn:annotation…` | the faces' `hx-post` (form fields → args; same single write route) |
+| `POST /k/sink urn:iki:annotation…` | the faces' `hx-post` (form fields → args; same single write route; legacy spelling accepted) |
 | anything else | 405 + `Allow` |
 
 Open `http://127.0.0.1:8642/` in a browser and click into a repo: tree →
@@ -136,7 +137,10 @@ Each config line is `<mode> <prefix>=<target>`, the CLI's grammar:
 
 ```toml
 mount = "prefer urn:repo:=~/.ikigai/dev.sock"
-mount = "prefer urn:annotation:=~/.ikigai/dev.sock"
+# No trailing colon: the annotation prefix must cover the bare mint IRI
+# (`urn:annotation`) as well as the slug family (`urn:annotation:{id}`).
+mount = "prefer urn:iki:annotation=~/.ikigai/dev.sock"
+mount = "prefer urn:annotation=~/.ikigai/dev.sock"
 ```
 
 `web.mount` lines and `--mount` flags use the same grammar and compose after
@@ -148,6 +152,38 @@ forwards IRIs unchanged and connects eagerly (a dead peer is a startup error);
 peer is its normal operation (503 under its prefix while asleep). v1 dials
 Unix-socket (IPC) targets only; `quic://` and `peer:` targets are a loud
 startup error.
+
+## The annotation route and the `urn:iki:` window
+
+`ikigai-browse` 0.3.0 moved the annotation family from `urn:annotation:*` to
+`urn:iki:annotation:*`. This server accepts **both** spellings on its one write
+route, for the whole transition window.
+
+That is deliberate, and it moves in the **opposite direction** from a mount
+line. `post_allowed()` is an HTTP route allowlist that sits **outside the
+kernel**: it inspects the raw request path *before* any resolution, so it sees
+**the name the caller wrote**. A mount line, by contrast, sits **inside** any
+alias table (`Kernel::with_aliases` wraps the root space), so it sees the
+**canonical** name — a stale `urn:annotation` mount stops matching the instant
+an alias fires, and the alias cannot save it. Route gates widen; mount lines
+get rewritten. Getting this backwards breaks one while "fixing" the other.
+
+⚠ **This process installs no alias table, and should not.** It composes
+*nothing* locally — the kernel is exactly its mounts — so there are no local
+bindings for a table to protect; it could only relocate names away from the
+very mount prefixes that route them. The rename lives at the peer that holds
+the bindings (the dev server), which installs its own table. What that means
+operationally:
+
+- an **old-spelling** request forwards verbatim over IPC and is aliased at the
+  peer, so it keeps working with no config change here;
+- a **new-spelling** request needs its own `mount` line, as above. Without one
+  nothing routes `urn:iki:annotation…` to a peer and it 404s at the empty local
+  space — the route gate accepting the name is necessary but not sufficient.
+
+The old entry comes out of the gate when no reachable caller emits the old
+spelling any more — in practice, once every host's alias table has dropped its
+`urn:annotation:` rule. Until then it is not redundancy to tidy away.
 
 ## License
 
