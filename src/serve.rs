@@ -593,6 +593,11 @@ async fn post(kernel: &Kernel, req: &HttpRequest, target: Iri) -> Resp {
 /// window, the legacy `urn:annotation…` spelling too; see
 /// [`ANNOTATION_ROOTS`]). Nothing else; the adapter never widens the face's
 /// verb surface.
+///
+/// A sink's body follows the same rule as [`post`]: form-encoded fields become
+/// invocation args (the htmx overlay's shape), and any other body arrives as
+/// the piped `content` with its `Content-Type` as `content-type`. The command's
+/// own `k=v` tokens come first and the body wins on collision.
 async fn k_command(kernel: &Kernel, req: &HttpRequest, command: String) -> Resp {
     let mut tokens = command.split_whitespace();
     let (Some(verb_word), Some(iri)) = (tokens.next(), tokens.next()) else {
@@ -637,6 +642,38 @@ async fn k_command(kernel: &Kernel, req: &HttpRequest, command: String) -> Resp 
                 for (k, v) in parse_query(body) {
                     merged.retain(|(name, _)| name != &k);
                     merged.push((k, v));
+                }
+            } else if !req.body.is_empty() {
+                // ★ A NON-FORM BODY IS THE PIPED `content`, here exactly as in [`post`].
+                //
+                // It was silently DROPPED until 2026-09-10: this arm read the form branch
+                // and nothing else, so `POST /k/sink urn:iki:annotation` with a `text/plain`
+                // payload sent the args and threw the payload away — no error, no note. The
+                // two entrances to the ONE write route this server has therefore disagreed
+                // about what a request body means, while the docs called them the same
+                // route. Where the Sink requires `content` that surfaced as a confusing
+                // `400 missing required argument`; where every input is optional it would
+                // have written an empty annotation and answered 200.
+                //
+                // A bound must refuse rather than truncate, and a body accepted-then-ignored
+                // is the truncating kind. The htmx faces post form-encoded and are untouched.
+                //
+                // One difference from [`post`] remains, and it is a refusal rather than a
+                // silence: the adapter's arguments are TEXT (the command line is
+                // `k=v` tokens), so a non-UTF-8 payload is a loud 400 here where the direct
+                // route carries arbitrary bytes. An annotation body is text; a caller with
+                // bytes to pipe has the direct route.
+                let Ok(body) = std::str::from_utf8(&req.body) else {
+                    return error_resp(
+                        400,
+                        "the piped body is not UTF-8 (the /k/ adapter's args are text; \
+                         POST the IRI directly to pipe arbitrary bytes)",
+                    );
+                };
+                merged.retain(|(name, _)| name != "content" && name != "content-type");
+                merged.push(("content".to_string(), body.to_string()));
+                if !content_type_hdr.is_empty() {
+                    merged.push(("content-type".to_string(), content_type_hdr.to_string()));
                 }
             }
             let mut request = Request::new(Verb::Sink, target);
