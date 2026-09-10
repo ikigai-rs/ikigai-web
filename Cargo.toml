@@ -11,7 +11,7 @@
 # entry. Renaming the package alone kept the running daemon, the supervision and
 # the re-registration untouched.
 name = "ikigai-web-server"
-version = "0.3.3"
+version = "0.4.0"
 edition = "2021"
 description = "Browse an ikigai kernel from a web browser: an HTTP face over a kernel composed from the machine's normal config-home mounts. Loopback by default (GET→Source, HEAD→Exists, one POST route: annotation minting); a non-loopback bind (web.bind/--bind) serves read-only — the write surface is disabled, not gated. Accept↔conneg; typed errors→status codes. Plus /sparql: a read-only, content-negotiated SPARQL face with a same-origin editor page."
 license = "MIT OR Apache-2.0"
@@ -21,18 +21,47 @@ repository = "https://github.com/ikigai-rs/ikigai-web"
 [dependencies]
 # The kernel this face fronts: Request/Verb/Representation/Error + the space
 # combinators (Fallback) the mount composition uses.
-ikigai-core = "0.1.54"
+#
+# ★ These three floors move TOGETHER, and 2026-09-10 moved them from
+# 0.1.54/0.1.10/0.1.13. Not a taste bump: `Resolved` gained the public
+# `canonical` field, so ikigai-resolve up to 0.1.14 does not COMPILE against
+# ikigai-core ≥ 0.1.60 — a struct-literal error inside a published dependency,
+# with nothing in either manifest to say so (`^0.1.54` admits 0.1.67). The
+# adopted `ikigai-conformance` requires core ≥ 0.1.67, cargo unifies core to
+# one version for the whole graph, and the old resolve/ipc floors then fail to
+# build. So the floors here are the true minimum in the strongest sense: the
+# oldest set that compiles together at all.
+ikigai-core = "0.1.67"
 # RemoteSpace/MountedRemote — the Resolver→Space adapters that let this process
 # compose the machine's peers (the dev server) behind IRI prefixes.
-ikigai-resolve = "0.1.10"
-# The IPC client transport: dial a Unix-socket peer (wire-v6 hello). 0.1.13 is
-# the true minimum: below it a resolver never redials, so a peer restart leaves
-# this process's mounted namespace dead until the process itself restarts.
-ikigai-ipc = "0.1.13"
+ikigai-resolve = "0.1.19"
+# The IPC client transport: dial a Unix-socket peer (wire hello). Above the old
+# 0.1.13 floor, which was already the true minimum for its own reason: below it
+# a resolver never redials, so a peer restart left this process's mounted
+# namespace dead until the process itself restarted.
+ikigai-ipc = "0.1.19"
+# `TurtleRenderer` — the Meta renderer `mounts::compose` injects. Core ships
+# none, and a kernel without one cannot render `urn:kernel:catalog`: this
+# server answered 500 on that route (a link its own index emits) until
+# 2026-09-10. Its only dependency beyond core is serde_json, already in the
+# graph, so the canonical renderer costs this face nothing.
+ikigai-vocab = "0.1.68"
 # The accept loop + per-connection tasks. Multi-thread because the forwarding
-# endpoints round-trip the wire SYNCHRONOUSLY (ikigai-resolve 0.1.10), each
-# in-flight request parks a worker thread.
+# endpoints round-trip the wire SYNCHRONOUSLY (ikigai-resolve), each in-flight
+# request parks a worker thread.
 tokio = { version = "1", features = ["net", "io-util", "rt-multi-thread", "macros", "time"] }
+
+[dev-dependencies]
+# The module recipe as a walk. This crate binds NO endpoints of its own — the
+# served kernel is exactly its mounts — so the suite runs here over a real
+# composition (`tests/conformance.rs`): the same endpoints in-process and
+# through an IPC mount, and the delta is what the mount costs.
+ikigai-conformance = "0.1.0"
+# `run_blocking` is the suite's own executor; the by-hand pins need one too.
+# (The peer half of the mount — a real Unix-socket kernel server — is
+# `ikigai-ipc::serve`, already a normal dependency for its client half.)
+futures = { version = "0.3", features = ["executor"], default-features = false }
+tempfile = "3"
 
 [[bin]]
 name = "ikigai-web"

@@ -13,10 +13,25 @@
 //! The server binds **127.0.0.1 by default**. On loopback the trust model is
 //! *the local owner*, the same posture the dev socket's peer-credential check
 //! takes: anything that can open a loopback connection on this machine is the
-//! machine's owner. Requests resolve under the root capability locally;
-//! capability does not yet cross the IPC wire, so the mounted peer serves
-//! under its own authority for a peercred-authenticated local client — exactly
-//! what it grants the CLI.
+//! machine's owner.
+//!
+//! ★ **Every request this face issues goes under [`ikigai_core::Capability::root`]**
+//! — every verb, every route, the `/k/` adapter included — and there is no
+//! parameter, header or config key by which it could be anything else. So a
+//! declared cap scope is never the gate here: what protects the one write route
+//! is the route allowlist (`serve::ANNOTATION_ROOTS`, colon-anchored) and the
+//! bind posture below. `tests/route_gate.rs` pins both halves — the same Sink a
+//! capability lacking its declared scope is refused at the kernel, accepted
+//! through the route — so the passkey → capability-workspace arc, when it
+//! reaches this face, announces itself as a failing test rather than a quiet
+//! widening.
+//!
+//! The capability itself DOES cross the IPC wire (the client carries it in
+//! `IssueAs`; the peer resolves under it, clamped to its authenticated
+//! principal) — `tests/conformance.rs` proves a peer enforcing a declared scope
+//! across a real mount, with the refused write landing nothing. What is missing
+//! is not the transport but anything at this edge that would narrow root before
+//! handing it over.
 //!
 //! `web.bind` (config) / `--bind` (flag) can widen the bind for a LAN demo
 //! (`web.bind = "0.0.0.0:8642"`) — and off loopback the server is **read-only

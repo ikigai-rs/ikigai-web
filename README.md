@@ -25,9 +25,23 @@ is a loud error. Default: `127.0.0.1:8642`. Flags override config wholesale.
 
 Binds **127.0.0.1 by default**. On loopback the trust model is *the local
 owner*, the same posture the dev socket's peer-credential check takes.
-Requests resolve under the root capability locally; capability does not yet
-cross the IPC wire, so a mounted peer serves under its own authority for a
-peercred-authenticated local client — exactly what it grants the CLI.
+
+Every request this face issues — every verb, every route, the `/k/` adapter
+included — is issued under the **root capability**, and there is no flag,
+header or config key that makes it anything else. So a declared cap scope is
+never the gate here: what protects the one write route is the route allowlist
+(two annotation roots, colon-anchored) plus the bind posture below.
+`tests/route_gate.rs` pins both halves — the same Sink a capability lacking its
+declared scope is refused at the kernel, accepted through the route — so the
+day this face starts minting attenuated capabilities (the passkey arc), the
+change announces itself.
+
+Note that the capability itself *does* cross the IPC wire now: the client
+carries it in `IssueAs` and the peer resolves under it, clamping to its
+authenticated principal — `tests/conformance.rs` proves a peer enforcing a
+declared scope across a real mount, and a refused write landing nothing. What
+is missing is not the transport, it is anything at this edge that would narrow
+root before handing it over.
 
 A non-loopback bind (`web.bind = "0.0.0.0:8642"`, or `--bind 0.0.0.0:8642`)
 serves **read-only**: one gate ahead of all dispatch refuses everything that
@@ -58,7 +72,7 @@ sensitive mounts beyond loopback.
 | `GET /` | index: browsable repos (via `urn:repo:list`) + the kernel catalog |
 | `GET /browse/{uri}` | the htmx shell page hosting the browse family's HTML faces |
 | `GET /k/source <iri> [k=v ...]` | the host adapter the faces' `hx-get` affordances target |
-| `POST /k/sink urn:iki:annotation…` | the faces' `hx-post` (form fields → args; same single write route; legacy spelling accepted) |
+| `POST /k/sink urn:iki:annotation…` | the faces' `hx-post` (form fields → args, any other body → the piped `content`; same single write route; legacy spelling accepted) |
 | anything else | 405 + `Allow` |
 
 Open `http://127.0.0.1:8642/` in a browser and click into a repo: tree →
@@ -74,7 +88,10 @@ wins over the header.
 **POST bodies:** `application/x-www-form-urlencoded` fields map to invocation
 args (the htmx overlay's shape); any other body arrives as the piped `content`
 arg with its `Content-Type` surfaced as `content-type`. Query args pass through
-too; body fields win on collision.
+too; body fields win on collision. The `/k/sink` spelling follows the same rule
+(it silently dropped non-form bodies until 0.4.0), with one difference that is
+a refusal rather than a silence: the adapter's arguments are text, so a
+non-UTF-8 payload is a 400 there and rides the direct route instead.
 
 **Errors:** typed kernel errors project to status codes — `NotFound`/
 `Unresolved` → 404, `Denied` → 403, bad args → 400, `Unavailable` → 503,
@@ -184,6 +201,40 @@ operationally:
 The old entry comes out of the gate when no reachable caller emits the old
 spelling any more — in practice, once every host's alias table has dropped its
 `urn:annotation:` rule. Until then it is not redundancy to tidy away.
+
+## Conformance — what a walk of the served kernel says
+
+This crate binds **no endpoints**. `mounts::compose` front-composes the config's
+`mount` lines and closes the chain with an empty `EndpointSpace`, so the served
+kernel is exactly its mounts — and the interesting question is not "does my
+module conform" but **does composition preserve conformance**.
+
+`tests/conformance.rs` answers it by running one
+[`ikigai-conformance`](https://crates.io/crates/ikigai-conformance) suite over
+two kernels built from the *same* endpoints: in-process, and through
+`compose` over a real `ikigai-ipc` peer. The delta is what a mount costs.
+
+- **Contracts cross whole.** ArgSpecs, `one_of` faces, declared outputs and
+  declared cap scopes all arrive intact — a mounted catalog is a usable
+  manifold, not a list of names.
+- **Enforcement crosses.** A declared scope is refused at the peer under a
+  capability that lacks it, and the refused write lands nothing.
+- **Golden threads do not cross.** A representation that is cacheable *and*
+  threaded in-process arrives cacheable with an **empty thread set**: thread
+  sets are `#[serde(skip)]` and kernel-local. The suite says so in the words the
+  recipe uses — "served forever with nothing to cut it" — and this is exactly
+  why the ETag here is content-derived rather than thread-derived. Endpoints
+  declared *pure* look unaffected, because a pure result was supposed to have no
+  thread; the erasure is only visible where there was something to lose.
+- **A peer with no Meta renderer has no contract.** `describe` over a mount is a
+  `Verb::Meta` round-trip, and it is best-effort: a peer that cannot render one
+  answers, and every mounted endpoint collapses to one anonymous, action-less
+  description called `remote`. Nothing reports it.
+- **An alias mount re-prefixes the peer's kernel operations too**
+  (`urn:edge:kernel:catalog`), which carries them past every `urn:kernel:`
+  exclusion — the conformance suite's included, so core's operations get walked
+  as if they were the module's. An argument for allowlists over denylists; this
+  server's write route is an allowlist.
 
 ## License
 
