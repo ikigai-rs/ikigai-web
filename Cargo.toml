@@ -56,7 +56,7 @@ tokio = { version = "1", features = ["net", "io-util", "rt-multi-thread", "macro
 # served kernel is exactly its mounts — so the suite runs here over a real
 # composition (`tests/conformance.rs`): the same endpoints in-process and
 # through an IPC mount, and the delta is what the mount costs.
-ikigai-conformance = "0.1.0"
+ikigai-conformance = "0.2.0"
 # `run_blocking` is the suite's own executor; the by-hand pins need one too.
 # (The peer half of the mount — a real Unix-socket kernel server — is
 # `ikigai-ipc::serve`, already a normal dependency for its client half.)
