@@ -33,8 +33,8 @@ never the gate here: what protects the one write route is the route allowlist
 (two annotation roots, colon-anchored) plus the bind posture below.
 `tests/route_gate.rs` pins both halves — the same Sink a capability lacking its
 declared scope is refused at the kernel, accepted through the route — so the
-day this face starts minting attenuated capabilities (the passkey arc), the
-change announces itself.
+day this face starts minting attenuated capabilities rather than handing out
+root, that test fails and the change announces itself.
 
 Note that the capability itself *does* cross the IPC wire now: the client
 carries it in `IssueAs` and the peer resolves under it, clamping to its
@@ -56,9 +56,9 @@ off loopback (presentation — the gate is the boundary).
 
 This is deliberately **trust-the-LAN, for demos**: anyone on the network can
 read what the mounted peers serve, and there is intentionally no auth theater
-in front of that. Real authentication is the passkey → capability-workspace
-arc (a WebAuthn login minting a capability-scoped workspace, the
-`ikigai-cms-web` lineage); until that lands here, don't bind a kernel with
+in front of that. Real authentication would be a passkey login minting a
+capability-scoped workspace — the shape `ikigai-cms-web` already uses — and
+**this crate does not have it**. Until it does, do not bind a kernel with
 sensitive mounts beyond loopback.
 
 ## The face
