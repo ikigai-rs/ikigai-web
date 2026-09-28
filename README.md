@@ -94,8 +94,11 @@ a refusal rather than a silence: the adapter's arguments are text, so a
 non-UTF-8 payload is a 400 there and rides the direct route instead.
 
 **Errors:** typed kernel errors project to status codes — `NotFound`/
-`Unresolved` → 404, `Denied` → 403, bad args → 400, `Unavailable` → 503,
-`Timeout` → 504.
+`Unresolved` → 404, `Denied` → 403, bad args → 400, `Conflict` → 409,
+`Unavailable` → 503, `Timeout` → 504. Never 412: the server evaluates no
+caller-stated precondition on a write. ⚠ A Conflict raised on the far side of
+an IPC mount reaches this server as a 500 until `ikigai-ipc` speaks wire v8 —
+a v8 peer downgrades it to `Endpoint("conflict: …")` for a v7 client.
 
 **Caching:** `Cache-Control` projects the representation's own `Expiry`
 (`Always` → `no-store`, `At` → `max-age`, `Never` → `public, no-cache`).
@@ -220,12 +223,14 @@ two kernels built from the *same* endpoints: in-process, and through
 - **Enforcement crosses.** A declared scope is refused at the peer under a
   capability that lacks it, and the refused write lands nothing.
 - **Golden threads do not cross.** A representation that is cacheable *and*
-  threaded in-process arrives cacheable with an **empty thread set**: thread
-  sets are `#[serde(skip)]` and kernel-local. The suite says so in the words the
-  recipe uses — "served forever with nothing to cut it" — and this is exactly
-  why the ETag here is content-derived rather than thread-derived. Endpoints
-  declared *pure* look unaffected, because a pure result was supposed to have no
-  thread; the erasure is only visible where there was something to lose.
+  threaded in-process arrives without the peer's threads: thread sets are
+  `#[serde(skip)]` and kernel-local. This is exactly why the ETag here is
+  content-derived rather than thread-derived. ⚠ Since core 0.1.73 the suite no
+  longer SAYS so: the local kernel hangs every cacheable answer from its own
+  target name, so the set is never empty and the CACHEABLE check passes. That
+  local thread is cut by a write made through this kernel, never by anything
+  the peer does, so the hole is narrower but still open; the test pins it by
+  hand because the walk cannot.
 - **A peer with no Meta renderer has no contract.** `describe` over a mount is a
   `Verb::Meta` round-trip, and it is best-effort: a peer that cannot render one
   answers, and every mounted endpoint collapses to one anonymous, action-less

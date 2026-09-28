@@ -116,6 +116,7 @@ fn erroring(kind: &'static str) -> FnEndpoint {
         Err(match kind {
             "missing" => Error::NotFound("gone fishing".into()),
             "denied" => Error::Denied("not with that capability".into()),
+            "conflict" => Error::Conflict("1,1 is taken — X played there".into()),
             _ => Error::Unavailable("peer asleep".into()),
         })
     })
@@ -154,7 +155,11 @@ fn test_kernel() -> Kernel {
         .bind(Exact::new("urn:repo:folio:tree"), hello())
         .bind(Exact::new("urn:missing"), erroring("missing"))
         .bind(Exact::new("urn:denied"), erroring("denied"))
-        .bind(Exact::new("urn:asleep"), erroring("asleep"));
+        .bind(Exact::new("urn:asleep"), erroring("asleep"))
+        // A state refusal on each route that can carry one: a read, and a write
+        // through the one POST route (an annotation slug already taken).
+        .bind(Exact::new("urn:taken"), erroring("conflict"))
+        .bind(Exact::new("urn:iki:annotation:taken"), erroring("conflict"));
     Kernel::new(Arc::new(Fallback::new(vec![
         Arc::new(space) as Arc<dyn Space>
     ])))
@@ -414,6 +419,37 @@ fn typed_errors_surface_as_statuses() {
     assert_eq!(get("/urn:denied").0, 403);
     assert_eq!(get("/urn:asleep").0, 503);
     assert_eq!(get("/urn:never-bound").0, 404);
+}
+
+/// `Error::Conflict` is the state refusing the request, and HTTP's name for
+/// that is 409 — not the 500 every unmapped variant falls to. The message is
+/// the whole point of a conflict (WHAT state refused), so it must reach the
+/// body intact, through the real routes rather than `status_of` alone.
+#[test]
+fn a_conflict_answers_409_with_its_message() {
+    let (status, _, body) = get("/urn:taken");
+    assert_eq!(status, 409);
+    let body = String::from_utf8(body).unwrap();
+    assert!(
+        body.contains("conflict: 1,1 is taken — X played there"),
+        "body was: {body}"
+    );
+
+    let form = "body=mine";
+    let (status, _, body) = roundtrip(&format!(
+        "POST /urn:iki:annotation:taken HTTP/1.1\r\nHost: t\r\n\
+         Content-Type: application/x-www-form-urlencoded\r\n\
+         Content-Length: {}\r\n\r\n{form}",
+        form.len()
+    ));
+    assert_eq!(status, 409);
+    let body = String::from_utf8(body).unwrap();
+    assert!(body.contains("1,1 is taken"), "body was: {body}");
+
+    // HEAD carries the status and, as for every HEAD, no body.
+    let (status, _, body) = roundtrip("HEAD /urn:taken HTTP/1.1\r\nHost: t\r\n\r\n");
+    assert_eq!(status, 409);
+    assert!(body.is_empty());
 }
 
 #[test]
