@@ -31,15 +31,25 @@ repository = "https://github.com/ikigai-rs/ikigai-web"
 # one version for the whole graph, and the old resolve/ipc floors then fail to
 # build. So the floors here are the true minimum in the strongest sense: the
 # oldest set that compiles together at all.
-ikigai-core = "0.1.67"
+#
+# 2026-09-28 moved them again, for the same reason: core 0.1.78 added
+# `Resolved.answered_by`, and ikigai-resolve ≤ 0.1.27 builds `Resolved` by
+# struct literal, so it does not compile against the 0.1.80 floor below.
+# 0.1.28 is the first resolve (and ipc) that builds it by constructor. Both
+# still speak wire v7, so this is a compile floor, not a protocol move.
+#
+# ★ 0.1.80 is the floor for `Error::Conflict` (the 409 in `serve::status_of`), the
+# first release with that variant. The caret is also a CEILING: `^0.1.80` admits
+# `<0.2.0`, so a 0.2 core is a deliberate move, never a silent one.
+ikigai-core = "0.1.80"
 # RemoteSpace/MountedRemote — the Resolver→Space adapters that let this process
 # compose the machine's peers (the dev server) behind IRI prefixes.
-ikigai-resolve = "0.1.19"
+ikigai-resolve = "0.1.28"
 # The IPC client transport: dial a Unix-socket peer (wire hello). Above the old
 # 0.1.13 floor, which was already the true minimum for its own reason: below it
 # a resolver never redials, so a peer restart left this process's mounted
 # namespace dead until the process itself restarted.
-ikigai-ipc = "0.1.19"
+ikigai-ipc = "0.1.28"
 # `TurtleRenderer` — the Meta renderer `mounts::compose` injects. Core ships
 # none, and a kernel without one cannot render `urn:kernel:catalog`: this
 # server answered 500 on that route (a link its own index emits) until

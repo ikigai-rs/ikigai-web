@@ -16,8 +16,9 @@
 //! - `mounts::compose(["override urn:demo:=<socket>"])` over a real
 //!   [`ikigai_ipc::serve`] peer serving that same kernel.
 //!
-//! The delta between the two reports is what the mount costs. It is not zero, and
-//! [`the_mount_costs_exactly_the_golden_threads`] holds it to the one thing it is.
+//! The delta between the two reports is what the mount costs. It is not zero, but since
+//! core 0.1.73 the reports cannot show it: [`the_mount_costs_exactly_the_golden_threads`]
+//! pins the one thing it is by hand.
 //!
 //! ## The fixture module
 //!
@@ -409,24 +410,26 @@ fn the_fixture_module_conforms_in_process() {
     );
 }
 
-/// ★ **The mount costs exactly the golden threads.** The same endpoints, the same suite,
-/// through `compose` over a live IPC peer: the ONE difference is that `demo-roster` — whose
-/// in-process representation is cacheable AND carries [`ROSTER_THREAD`] — arrives cacheable
-/// with an EMPTY thread set, because `Representation::threads` is `#[serde(skip)]` and does
-/// not cross the wire. The suite names it in the words the field guide uses: "cacheable with
-/// an empty golden-thread set: it will be served forever with nothing to cut it."
+/// ★ **The mount costs exactly the golden threads — and since core 0.1.73 the suite can no
+/// longer see it.** The same endpoints, the same suite, through `compose` over a live IPC
+/// peer. `demo-roster`'s in-process representation is cacheable and hangs from
+/// [`ROSTER_THREAD`]; over the wire that thread is gone, because `Representation::threads`
+/// is `#[serde(skip)]` and does not cross. That is the standing hole this crate's ETag design
+/// was built around (see the crate docs: the validator is content-derived precisely because
+/// "thread sets are `#[serde(skip)]` and kernel-local, so they do not cross a wire mount").
 ///
-/// That is not a defect of the fixture and not a defect of the suite. It is the standing
-/// hole this crate's ETag design was built around (see the crate docs: the validator is
-/// content-derived precisely because "thread sets are `#[serde(skip)]` and kernel-local, so
-/// they do not cross a wire mount"), and it is the same hole memory records as "a MOUNTED
-/// cacheable repr caches forever with an empty thread set". This test is the first
-/// MECHANICAL statement of it: not a note, a red line in a walk.
+/// Up to core 0.1.72 the suite named it — "cacheable with an empty golden-thread set" — and
+/// this test pinned that red line. Core 0.1.73 (hole A, ledger #512) made the kernel hang
+/// every cacheable Source/Exists answer from its own canonical target, so the mounted
+/// representation now arrives with ONE thread, `urn:demo:roster`, the local name. The set is
+/// no longer empty, so the suite's CACHEABLE check passes, and the report over the mount is
+/// as clean as the one in-process.
 ///
-/// `demo-upper` does not show it — it is declared `pure`, and a pure result is *supposed* to
-/// have no thread, so the wire's erasure is invisible on exactly the endpoints where it
-/// would not have mattered. The erasure is only visible on the endpoints that had something
-/// to lose, which is why "the mounted kernel looks fine" is not evidence.
+/// **The hole is narrower, not closed.** The local target thread is cut by a Sink or Delete
+/// made THROUGH this kernel on that name. It is not cut by anything the peer does: a cut of
+/// `ROSTER_THREAD` on the peer, or a write that reaches the peer by another route, leaves
+/// this kernel serving the old roster until something local cuts it. So the pins below are
+/// the mechanism, by hand, because the walk can no longer carry the statement.
 #[test]
 fn the_mount_costs_exactly_the_golden_threads() {
     let ledger: Ledger = Arc::default();
@@ -436,25 +439,20 @@ fn the_mount_costs_exactly_the_golden_threads() {
     eprintln!("--- over an IPC mount ---\n{over_the_wire}");
 
     assert!(in_process.is_clean(), "control:\n{in_process}");
-    assert_eq!(
-        finding_keys(&over_the_wire),
-        BTreeSet::from(["demo-roster Cacheable".to_string()]),
-        "the mount's whole cost, and it is the thread set:\n{over_the_wire}"
-    );
     assert!(
-        over_the_wire
-            .findings
-            .iter()
-            .all(|f| f.detail.contains("empty golden-thread set")),
-        "and it is that finding, in those words:\n{over_the_wire}"
+        over_the_wire.is_clean(),
+        "the kernel's target thread masks the erasure from the walk:\n{over_the_wire}"
     );
     // The same walk, same counts: composition hides no endpoint and skips no check.
     assert_eq!(over_the_wire.endpoints, in_process.endpoints);
     assert_eq!(over_the_wire.actions, in_process.actions);
     assert_eq!(over_the_wire.checks.skipped().count(), 0);
 
-    // Both halves of the erasure, by hand, so the mechanism is pinned and not just the
-    // symptom: the representation is still marked cacheable, and its threads are gone.
+    // The mechanism, by hand: the representation is still marked cacheable, the peer's
+    // declared thread is gone, and what remains is the thread the LOCAL kernel added.
+    let threads_of = |repr: &Representation| -> BTreeSet<String> {
+        repr.threads().iter().map(|t| t.to_string()).collect()
+    };
     let direct = issue(
         &peer_kernel(Arc::default()),
         request(Verb::Source, "urn:demo:roster", &[]),
@@ -463,13 +461,9 @@ fn the_mount_costs_exactly_the_golden_threads() {
     .expect("in-process");
     assert_eq!(direct.expiry, Expiry::Never);
     assert_eq!(
-        direct
-            .threads()
-            .iter()
-            .map(|t| t.to_string())
-            .collect::<Vec<_>>(),
-        vec![ROSTER_THREAD.to_string()],
-        "in-process, the thread is there"
+        threads_of(&direct),
+        BTreeSet::from([ROSTER_THREAD.to_string(), "urn:demo:roster".to_string()]),
+        "in-process: the declared thread, and the target thread the kernel adds"
     );
     let through = issue(
         &mounted.kernel,
@@ -479,10 +473,10 @@ fn the_mount_costs_exactly_the_golden_threads() {
     .expect("over the mount");
     assert_eq!(through.bytes, direct.bytes, "the same bytes cross");
     assert_eq!(through.expiry, Expiry::Never, "the expiry crosses");
-    assert!(
-        through.threads().is_empty(),
-        "the thread does not: {:?}",
-        through.threads()
+    assert_eq!(
+        threads_of(&through),
+        BTreeSet::from(["urn:demo:roster".to_string()]),
+        "the declared thread does not cross; only the local target thread remains"
     );
 }
 
@@ -707,9 +701,11 @@ fn dropping_a_required_input_is_a_typed_refusal_through_the_mount() {
 /// 1. The conformance suite skips core's own operations unless `include_kernel_ops()` asks,
 ///    and it recognizes them by their name. Under an alias it does not recognize them, so a
 ///    walk of a module reached through an alias mount reports CORE's findings as the
-///    module's: thirteen of them here, on four operations, and every one is real (core's
-///    `kernel-actions`, `kernel-cut` and `kernel-validate` declare inputs with no `class`;
-///    `kernel-catalog` and `kernel-actions` are cacheable with no thread). A module author
+///    module's: eleven of them here, on three operations, and every one is real (core's
+///    `kernel-actions`, `kernel-cut` and `kernel-validate` declare inputs with no `class`,
+///    and `kernel-validate` does not resolve with the minimal inputs its ArgSpecs allow).
+///    Core 0.1.74 hung `kernel-catalog` and `kernel-actions` from the bindings thread, which
+///    retired their two CACHEABLE findings. A module author
 ///    who mounted a peer this way would be handed another crate's homework with no marker
 ///    saying so. Reported for the conformance PENDING; the ids are pinned below so the day
 ///    core types those ArgSpecs, this test says so.
@@ -720,7 +716,8 @@ fn dropping_a_required_input_is_a_typed_refusal_through_the_mount() {
 ///    two annotation roots, not a deny-list — which is the argument for allow-lists.
 ///
 /// What the alias does NOT cost: the module's own findings are identical to the override
-/// mount's (the same single thread erasure), and the local names resolve.
+/// mount's (none — see [`the_mount_costs_exactly_the_golden_threads`] for why the thread
+/// erasure no longer shows in a walk), and the local names resolve.
 #[test]
 fn an_alias_mount_re_prefixes_the_peers_kernel_operations_too() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -777,15 +774,13 @@ fn an_alias_mount_re_prefixes_the_peers_kernel_operations_too() {
         .partition(|key| key.starts_with("demo-"));
     assert_eq!(
         mine,
-        BTreeSet::from(["demo-roster Cacheable".to_string()]),
+        BTreeSet::new(),
         "the module's own findings are the override mount's, unchanged:\n{report}"
     );
     assert_eq!(
         core_s,
         BTreeSet::from([
             "kernel-actions ArgSpecs".to_string(),
-            "kernel-actions Cacheable".to_string(),
-            "kernel-catalog Cacheable".to_string(),
             "kernel-cut ArgSpecs".to_string(),
             "kernel-validate ArgSpecs".to_string(),
             "kernel-validate SkolemRdf".to_string(),

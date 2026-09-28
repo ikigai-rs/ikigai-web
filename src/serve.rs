@@ -377,6 +377,11 @@ pub fn status_of(error: &Error) -> u16 {
         Error::Unresolved(_) | Error::NotFound(_) => 404,
         Error::Denied(_) => 403,
         Error::MissingArgument(_) | Error::InvalidArgument { .. } => 400,
+        // The state refuses the request (a taken slot, a write whose precondition
+        // does not hold). Always 409 here, never 412: this server evaluates no
+        // caller-stated precondition on a write — `If-None-Match` is read only on
+        // GET, for a 304 — so every Conflict it sees is the endpoint's own.
+        Error::Conflict(_) => 409,
         Error::Unavailable(_) => 503,
         Error::Timeout(_) => 504,
         _ => 500,
@@ -1027,6 +1032,7 @@ mod tests {
         assert_eq!(status_of(&Error::Unavailable("x".into())), 503);
         assert_eq!(status_of(&Error::Timeout("x".into())), 504);
         assert_eq!(status_of(&Error::MissingArgument("x".into())), 400);
+        assert_eq!(status_of(&Error::Conflict("x".into())), 409);
         assert_eq!(status_of(&Error::Endpoint("x".into())), 500);
     }
 
