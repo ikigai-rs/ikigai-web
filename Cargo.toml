@@ -36,7 +36,14 @@ repository = "https://github.com/ikigai-rs/ikigai-web"
 # `Resolved.answered_by`, and ikigai-resolve ≤ 0.1.27 builds `Resolved` by
 # struct literal, so it does not compile against the 0.1.80 floor below.
 # 0.1.28 is the first resolve (and ipc) that builds it by constructor. Both
-# still speak wire v7, so this is a compile floor, not a protocol move.
+# still speak wire v7, so that was a compile floor, not a protocol move.
+#
+# ★ 2026-09-28 (later) moved resolve/ipc to 0.1.30, and THAT one is a protocol
+# move: 0.1.30 is the first wire-v8 release, the first that carries
+# `WireError::Conflict` typed. Below it a Conflict raised by a mounted peer
+# arrives here as `Endpoint("conflict: …")` and answers 500, not 409
+# (`tests/remote_conflict.rs` pins both). Core stays at 0.1.80: the 0.1.30
+# crates themselves ask for no more.
 #
 # ★ 0.1.80 is the floor for `Error::Conflict` (the 409 in `serve::status_of`), the
 # first release with that variant. The caret is also a CEILING: `^0.1.80` admits
@@ -44,12 +51,12 @@ repository = "https://github.com/ikigai-rs/ikigai-web"
 ikigai-core = "0.1.80"
 # RemoteSpace/MountedRemote — the Resolver→Space adapters that let this process
 # compose the machine's peers (the dev server) behind IRI prefixes.
-ikigai-resolve = "0.1.28"
+ikigai-resolve = "0.1.30"
 # The IPC client transport: dial a Unix-socket peer (wire hello). Above the old
 # 0.1.13 floor, which was already the true minimum for its own reason: below it
 # a resolver never redials, so a peer restart left this process's mounted
 # namespace dead until the process itself restarted.
-ikigai-ipc = "0.1.28"
+ikigai-ipc = "0.1.30"
 # `TurtleRenderer` — the Meta renderer `mounts::compose` injects. Core ships
 # none, and a kernel without one cannot render `urn:kernel:catalog`: this
 # server answered 500 on that route (a link its own index emits) until
@@ -72,6 +79,11 @@ ikigai-conformance = "0.2.0"
 # `ikigai-ipc::serve`, already a normal dependency for its client half.)
 futures = { version = "0.3", features = ["executor"], default-features = false }
 tempfile = "3"
+# The hello codec, for the one test that stands up a wire-v7 peer by hand
+# (`tests/remote_conflict.rs`): a v7 ipc crate cannot join this graph beside
+# 0.1.30 (both are `^0.1`, so cargo unifies them), so the v7 peer is a hello
+# shim in front of a real v8 server. Already in the graph via ikigai-ipc.
+ikigai-wire = "0.1.30"
 
 [[bin]]
 name = "ikigai-web"

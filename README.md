@@ -96,9 +96,11 @@ non-UTF-8 payload is a 400 there and rides the direct route instead.
 **Errors:** typed kernel errors project to status codes — `NotFound`/
 `Unresolved` → 404, `Denied` → 403, bad args → 400, `Conflict` → 409,
 `Unavailable` → 503, `Timeout` → 504. Never 412: the server evaluates no
-caller-stated precondition on a write. ⚠ A Conflict raised on the far side of
-an IPC mount reaches this server as a 500 until `ikigai-ipc` speaks wire v8 —
-a v8 peer downgrades it to `Endpoint("conflict: …")` for a v7 client.
+caller-stated precondition on a write. A Conflict raised on the far side of an
+IPC mount answers 409 too, since `ikigai-ipc`/`ikigai-resolve` 0.1.30 (wire v8)
+carry it typed. A mounted peer still on wire v7 cannot, so its Conflicts arrive
+as `endpoint error: conflict: …` and answer 500 (`tests/remote_conflict.rs`
+pins both).
 
 **Caching:** `Cache-Control` projects the representation's own `Expiry`
 (`Always` → `no-store`, `At` → `max-age`, `Never` → `public, no-cache`).
