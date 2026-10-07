@@ -20,7 +20,7 @@
 //! replaces `web.bind`. See [`crate::config::resolve_ceiling`].
 //!
 //! - **Unset on loopback:** root, exactly as before. Loopback's trust model is the local
-//!   owner, the same as the dev socket's peer-credential check.
+//!   owner, the same as gonk's IPC socket's peer-credential check.
 //! - **Unset off loopback: the server refuses to start** ([`Ceiling::admits`]). A LAN
 //!   face with no ceiling is the defect measured above, and failing loud names the fix
 //!   (`web.cap`) at the moment someone widens the bind, rather than serving root to the
@@ -34,8 +34,8 @@ use ikigai_core::Capability;
 
 use crate::serve::Posture;
 
-/// The browse-only ceiling: what a LAN face needs to give today's dev-server browse
-/// parity through gonk, and nothing else.
+/// The browse-only ceiling: what a LAN face needs to serve browse through gonk (the
+/// surface the retired dev server used to give), and nothing else.
 ///
 /// - `urn:cap:browse:read:*` — every browse root's tree, files, git state, annotations
 ///   and archive listing. `ikigai-browse` reads this literal scope as the all-roots

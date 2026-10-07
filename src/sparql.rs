@@ -135,7 +135,7 @@ fn accept_result_type(accept: &str) -> Option<&'static str> {
 /// recognized type that form can answer in (SELECT/ASK answer in the results
 /// types, CONSTRUCT/DESCRIBE in RDF syntaxes). A type the form cannot answer is
 /// skipped rather than forwarded, because gonk's faces refuse an `as` of the
-/// other family (400) where the dev server substituted its default: a SPARQL
+/// other family (400) where the retired dev server substituted its default: a SPARQL
 /// client listing `application/sparql-results+json` first for a CONSTRUCT was
 /// refused at 8642 after the cutover (ledger #839). `None` = the endpoint's
 /// default face. The html face is decided earlier, by [`accept_result_type`].

@@ -27,7 +27,7 @@ const READ_BUDGET: Duration = Duration::from_secs(30);
 /// which surface this face offers.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Posture {
-    /// Loopback bind: the local owner (the same trust the dev socket's
+    /// Loopback bind: the local owner (the same trust gonk's IPC socket's
     /// peer-credential check extends). The full v1 surface, including the one
     /// write route (annotation minting).
     LocalOwner,

@@ -6,7 +6,8 @@
 //! composed from the machine's NORMAL config — the `mount` lines in
 //! `~/.config/ikigai/config.toml`. This process owns no store and configures
 //! no browse roots: everything it serves lives on the mounted peers (on a
-//! typical machine, the dev server behind `~/.ikigai/dev.sock`).
+//! typical machine, gonk behind `~/.ikigai/gonk.sock`; the dev server it
+//! replaced was retired on 2026-10-07).
 //!
 //! ## Trust posture
 //!
@@ -15,8 +16,8 @@
 //! read or write once connected).
 //!
 //! **The bind.** 127.0.0.1 by default. On loopback the trust model is *the
-//! local owner*, the same posture the dev socket's peer-credential check
-//! takes: anything that can open a loopback connection on this machine is the
+//! local owner*, the same posture gonk's IPC socket takes with its
+//! peer-credential check: anything that can open a loopback connection on this machine is the
 //! machine's owner. `web.bind` (config) / `--bind` (flag) widens it for the
 //! LAN (`web.bind = "0.0.0.0:8642"`), and off loopback the server is
 //! **read-only by construction**, not by per-route discipline: one gate ahead

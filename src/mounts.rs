@@ -1,7 +1,7 @@
 //! Compose the served kernel from the machine's `mount` config lines.
 //!
 //! Each line is `<mode> <prefix>=<target>`, the same grammar the CLI's
-//! `config_mounts()` reads (`mount = "prefer urn:repo:=~/.ikigai/dev.sock"`):
+//! `config_mounts()` reads (`mount = "prefer urn:repo:=~/.ikigai/gonk.sock"`):
 //!
 //! - `alias` (or `mount`) — the prefix is a LOCAL name for the remote's `urn:`
 //!   namespace (stripped and re-prefixed on the way through).
@@ -272,10 +272,10 @@ mod tests {
 
     #[test]
     fn the_three_modes_parse() {
-        let line = parse_mount_line("prefer urn:repo:=/x/dev.sock").unwrap();
+        let line = parse_mount_line("prefer urn:repo:=/x/gonk.sock").unwrap();
         assert_eq!(line.kind, MountKind::Prefer);
         assert_eq!(line.prefix, "urn:repo:");
-        assert_eq!(line.target, "/x/dev.sock");
+        assert_eq!(line.target, "/x/gonk.sock");
         assert_eq!(
             parse_mount_line("override urn:py:=/x/py.sock")
                 .unwrap()
@@ -296,8 +296,8 @@ mod tests {
     #[test]
     fn tilde_expands_to_home() {
         let home = std::env::var("HOME").unwrap();
-        let line = parse_mount_line("prefer urn:repo:=~/.ikigai/dev.sock").unwrap();
-        assert_eq!(line.target, format!("{home}/.ikigai/dev.sock"));
+        let line = parse_mount_line("prefer urn:repo:=~/.ikigai/gonk.sock").unwrap();
+        assert_eq!(line.target, format!("{home}/.ikigai/gonk.sock"));
     }
 
     #[test]
@@ -321,7 +321,7 @@ mod tests {
         // A prefer target that does not exist must not fail composition —
         // absence at startup is its normal operation.
         let kernel = compose(vec![parse_mount_line(
-            "prefer urn:repo:=/nonexistent/dev.sock",
+            "prefer urn:repo:=/nonexistent/gonk.sock",
         )
         .unwrap()])
         .unwrap();
@@ -332,12 +332,12 @@ mod tests {
     #[test]
     fn eager_mounts_refuse_a_dead_target() {
         let result = compose(vec![parse_mount_line(
-            "override urn:repo:=/nonexistent/dev.sock",
+            "override urn:repo:=/nonexistent/gonk.sock",
         )
         .unwrap()]);
         match result {
             Ok(_) => panic!("a dead eager target must refuse composition"),
-            Err(err) => assert!(err.contains("/nonexistent/dev.sock"), "err was: {err}"),
+            Err(err) => assert!(err.contains("/nonexistent/gonk.sock"), "err was: {err}"),
         }
     }
 }
