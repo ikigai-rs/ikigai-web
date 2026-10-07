@@ -13,7 +13,7 @@
 //! - `web.mount` (repeatable) — mounts for THIS process only, same grammar.
 //!   Web-scoped by key: the CLI hosts read `mount` and never `web.mount`, so
 //!   a web-only mount (e.g. `web.mount = "prefer urn:sparql:=~/.ikigai/
-//!   dev.sock"` for the /sparql face) cannot shadow their local spaces
+//!   gonk.sock"` for the /sparql face) cannot shadow their local spaces
 //!   machine-wide. A repeatable `--mount` flag is the ad-hoc spelling.
 //! - `web.bind` — the full `IP:PORT` to bind (a `--bind` flag overrides).
 //!   Binding beyond loopback makes the server READ-ONLY; see
@@ -159,7 +159,7 @@ mod tests {
                         lisp.timeout = 300\n\
                         \n\
                         mount = \"prefer urn:py:=/x/py.sock\"\n\
-                        mount = \"prefer urn:repo:=/x/dev.sock\"\n\
+                        mount = \"prefer urn:repo:=/x/gonk.sock\"\n\
                         web.port = '9999'\n";
 
     #[test]
@@ -175,7 +175,7 @@ mod tests {
             values_for(TEXT, "mount"),
             vec![
                 "prefer urn:py:=/x/py.sock".to_string(),
-                "prefer urn:repo:=/x/dev.sock".to_string(),
+                "prefer urn:repo:=/x/gonk.sock".to_string(),
             ]
         );
     }

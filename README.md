@@ -7,7 +7,8 @@ A small standalone HTTP server: `GET http://127.0.0.1:8642/{uri}` percent-decode
 kernel composed from the machine's **normal config** — the `mount` lines in
 `~/.config/ikigai/config.toml`. This process owns no store and configures no
 browse roots; everything it serves lives on the mounted peers (typically gonk
-behind `~/.ikigai/gonk.sock`, or the dev server it replaces).
+behind `~/.ikigai/gonk.sock`; the dev server it replaced was retired on
+2026-10-07).
 
 ```
 ikigai-web [--bind IP:PORT | --port N] [--cap SCOPE ...] [--config PATH] [--mount LINE ...]
@@ -32,7 +33,8 @@ once connected.
 ### The bind
 
 Binds **127.0.0.1 by default**. On loopback the trust model is *the local
-owner*, the same posture the dev socket's peer-credential check takes.
+owner*, the same posture gonk's IPC socket takes with its peer-credential
+check.
 
 A non-loopback bind (`web.bind = "0.0.0.0:8642"`, or `--bind 0.0.0.0:8642`)
 serves **read-only**: one gate ahead of all dispatch refuses everything that
@@ -86,14 +88,16 @@ union of the graphs the caller may read). No ledger token, no store-wide
 inference). `urn:cap:browse:read:*` is every root the BROWSE PEER serves;
 `urn:cap:browse:read:{root}` (one line each) names roots instead.
 
-⚠ **A ceiling narrows only what a peer enforces.** Measured 2026-10-07 through
-today's dev-server mounts: under the browse-only ceiling the dev server still
-served `urn:repo:folio:*` (it is a dev-server browse root, and the ceiling
-grants every root) and its `urn:sparql:*` answered over its whole store (2,374
-quads, `folio`'s included) whatever capability arrived. Through gonk the same
-ceiling read the browse graph and nothing else. So the ceiling and the
-dev-server cutover go together: point browse and `/sparql` at gonk before
-binding beyond loopback.
+⚠ **A ceiling narrows only what a peer enforces.** Measured 2026-10-07, just
+before the dev server was retired, through the dev-server mounts of the time:
+under the browse-only ceiling the dev server still served `urn:repo:folio:*`
+(a dev-server browse root, and the ceiling grants every root) and its
+`urn:sparql:*` answered over its whole store (2,374 quads, `folio`'s included)
+whatever capability arrived. Through gonk the same ceiling read the browse
+graph and nothing else. That is why the ceiling and the cutover went together:
+browse and `/sparql` now mount gonk, and a mount line that sends either to a
+peer that does not enforce the caller's scopes reopens the hole, whatever
+`web.cap` says.
 
 The capability crosses the IPC wire: the mount resolver carries it in `IssueAs`
 and the peer resolves under it, clamped to its authenticated principal.
@@ -110,8 +114,8 @@ person on the network.
 
 ### Putting 8642 on the LAN
 
-The config-home lines, after gonk serves `urn:sparql:*` (gonk main since ledger
-#836) and with the dev-server mounts cut over to it:
+The config-home lines, with gonk serving browse and `urn:sparql:*` (ledger #836;
+the dev-server mounts were cut over to it on 2026-10-07):
 
 ```toml
 mount = "prefer urn:repo:=/Users/you/.ikigai/gonk.sock"
@@ -209,8 +213,7 @@ is always `Verb::Source`. The face is **read-only**: update forms
 `POST /sparql` does not widen the write surface.
 
 The `urn:sparql:*` space lives on gonk (its store: explanations, annotations,
-review passes, the ledgers' graphs), or on the dev server it replaces. Mount it
-for this process only:
+review passes, the ledgers' graphs). Mount it for this process only:
 
 ```toml
 web.mount = "prefer urn:sparql:=~/.ikigai/gonk.sock"
@@ -232,15 +235,20 @@ flag spelling of the same line.
 Each config line is `<mode> <prefix>=<target>`, the CLI's grammar:
 
 ```toml
-mount = "prefer urn:repo:=~/.ikigai/dev.sock"
+mount = "prefer urn:repo:=~/.ikigai/gonk.sock"
 # No trailing colon: the annotation prefix must cover the bare mint IRI
-# (`urn:annotation`) as well as the slug family (`urn:annotation:{id}`).
-mount = "prefer urn:iki:annotation=~/.ikigai/dev.sock"
-mount = "prefer urn:annotation=~/.ikigai/dev.sock"
+# (`urn:iki:annotation`) as well as the slug family (`urn:iki:annotation:{id}`).
+mount = "prefer urn:iki:annotation=~/.ikigai/gonk.sock"
+# This process only: the /sparql face (see /sparql above).
+web.mount = "prefer urn:sparql:=~/.ikigai/gonk.sock"
+# The browse-only ceiling beside it (see Trust posture above).
+web.cap = "urn:cap:browse:read:*"
+web.cap = "urn:cap:store:read:graph:urn:iki:browse:graph:default"
 ```
 
 `web.mount` lines and `--mount` flags use the same grammar and compose after
-the shared `mount` lines, for this process only.
+the shared `mount` lines, for this process only. There is no `urn:annotation`
+line any more: nothing binds the pre-0.3.0 name (see below).
 
 `alias` renames a remote's `urn:` namespace under a local prefix; `override`
 forwards IRIs unchanged and connects eagerly (a dead peer is a startup error);
@@ -268,18 +276,23 @@ get rewritten. Getting this backwards breaks one while "fixing" the other.
 *nothing* locally — the kernel is exactly its mounts — so there are no local
 bindings for a table to protect; it could only relocate names away from the
 very mount prefixes that route them. The rename lives at the peer that holds
-the bindings (the dev server), which installs its own table. What that means
-operationally:
+the bindings. That was the dev server, which installed its own table; it was
+retired on 2026-10-07, and gonk binds only `urn:iki:annotation` and aliases
+nothing from the old name. What that means operationally:
 
-- an **old-spelling** request forwards verbatim over IPC and is aliased at the
-  peer, so it keeps working with no config change here;
 - a **new-spelling** request needs its own `mount` line, as above. Without one
   nothing routes `urn:iki:annotation…` to a peer and it 404s at the empty local
-  space — the route gate accepting the name is necessary but not sufficient.
+  space — the route gate accepting the name is necessary but not sufficient;
+- an **old-spelling** request used to forward verbatim over IPC under a
+  `urn:annotation` mount line and be aliased at the dev server. With that peer
+  retired and that line gone, it passes the route gate and then 404s here, at
+  the empty local space.
 
 The old entry comes out of the gate when no reachable caller emits the old
-spelling any more — in practice, once every host's alias table has dropped its
-`urn:annotation:` rule. Until then it is not redundancy to tidy away.
+spelling any more — in practice, once no host aliases or mounts the
+`urn:annotation` name. On a machine configured as above that is already true;
+taking the entry out is a change to the gate, not to these docs, and has not
+been made.
 
 ## Conformance — what a walk of the served kernel says
 

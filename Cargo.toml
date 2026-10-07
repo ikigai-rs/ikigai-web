@@ -50,7 +50,7 @@ repository = "https://github.com/ikigai-rs/ikigai-web"
 # `<0.2.0`, so a 0.2 core is a deliberate move, never a silent one.
 ikigai-core = "0.1.80"
 # RemoteSpace/MountedRemote — the Resolver→Space adapters that let this process
-# compose the machine's peers (the dev server) behind IRI prefixes.
+# compose the machine's peers (gonk, on a typical machine) behind IRI prefixes.
 ikigai-resolve = "0.1.30"
 # The IPC client transport: dial a Unix-socket peer (wire hello). Above the old
 # 0.1.13 floor, which was already the true minimum for its own reason: below it

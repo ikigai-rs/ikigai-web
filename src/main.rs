@@ -86,7 +86,7 @@ fn main() {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(ikigai_web_server::config::config_path);
     // Expected-but-unset must stop: a web face over NO mounts serves nothing,
-    // and silently starting empty would look exactly like a broken dev server.
+    // and silently starting empty would look exactly like a broken peer.
     let config_text = match std::fs::read_to_string(&config_path) {
         Ok(text) => text,
         Err(e) => fail(&format!(
