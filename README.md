@@ -6,11 +6,11 @@ A small standalone HTTP server: `GET http://127.0.0.1:8642/{uri}` percent-decode
 `{uri}` (e.g. `/urn:repo:ikigai-core:tree`) and resolves it through an embedded
 kernel composed from the machine's **normal config** — the `mount` lines in
 `~/.config/ikigai/config.toml`. This process owns no store and configures no
-browse roots; everything it serves lives on the mounted peers (typically the dev
-server behind `~/.ikigai/dev.sock`).
+browse roots; everything it serves lives on the mounted peers (typically gonk
+behind `~/.ikigai/gonk.sock`, or the dev server it replaces).
 
 ```
-ikigai-web [--bind IP:PORT | --port N] [--config PATH] [--mount LINE ...]
+ikigai-web [--bind IP:PORT | --port N] [--cap SCOPE ...] [--config PATH] [--mount LINE ...]
 ```
 
 Configuration comes from the config home and flags — never environment
@@ -18,30 +18,21 @@ variables. `web.bind` in the config sets the full bind address (`--bind`
 overrides); `web.port` is shorthand for `web.bind = "127.0.0.1:{port}"`
 (`--port` likewise) — they are one setting spelled two ways, so setting both
 is a loud error. Default: `127.0.0.1:8642`. Flags override config wholesale.
-`web.mount` config lines (and repeatable `--mount` flags) add mounts for
-**this process only** — see [Mounts](#mounts).
+`web.cap` lines (one scope each; repeatable `--cap` flags replace them) set the
+capability **ceiling** every request holds; off loopback one is required (see
+[Trust posture](#trust-posture)). `web.mount` config lines (and repeatable
+`--mount` flags) add mounts for **this process only** — see [Mounts](#mounts).
 
 ## Trust posture
 
+Two settings decide what this face exposes, and they are independent: the
+**bind** says who can connect, the **ceiling** says what any request may reach
+once connected.
+
+### The bind
+
 Binds **127.0.0.1 by default**. On loopback the trust model is *the local
 owner*, the same posture the dev socket's peer-credential check takes.
-
-Every request this face issues — every verb, every route, the `/k/` adapter
-included — is issued under the **root capability**, and there is no flag,
-header or config key that makes it anything else. So a declared cap scope is
-never the gate here: what protects the one write route is the route allowlist
-(two annotation roots, colon-anchored) plus the bind posture below.
-`tests/route_gate.rs` pins both halves — the same Sink a capability lacking its
-declared scope is refused at the kernel, accepted through the route — so the
-day this face starts minting attenuated capabilities rather than handing out
-root, that test fails and the change announces itself.
-
-Note that the capability itself *does* cross the IPC wire now: the client
-carries it in `IssueAs` and the peer resolves under it, clamping to its
-authenticated principal — `tests/conformance.rs` proves a peer enforcing a
-declared scope across a real mount, and a refused write landing nothing. What
-is missing is not the transport, it is anything at this edge that would narrow
-root before handing it over.
 
 A non-loopback bind (`web.bind = "0.0.0.0:8642"`, or `--bind 0.0.0.0:8642`)
 serves **read-only**: one gate ahead of all dispatch refuses everything that
@@ -49,17 +40,94 @@ is not GET/HEAD with a 403, so the write surface — the annotation Sink, in
 both its `POST /urn:iki:annotation…` and `/k/sink` spellings, and under the
 legacy `urn:annotation…` name too — is *gone*, not gated per-route. The
 exception is `POST /sparql`, whose body is a query (that face is read-only by
-its own construction and rejects update forms itself).
-The posture derives from the socket actually bound, inside `serve` itself; the
-startup line states it. The browse shell also stops offering the annotate form
-off loopback (presentation — the gate is the boundary).
+its own construction and rejects update forms itself). The posture derives
+from the socket actually bound, inside `serve` itself; the startup line states
+it. The browse shell also stops offering the annotate form off loopback
+(presentation — the gate is the boundary).
 
-This is deliberately **trust-the-LAN, for demos**: anyone on the network can
-read what the mounted peers serve, and there is intentionally no auth theater
-in front of that. Real authentication would be a passkey login minting a
-capability-scoped workspace — the shape `ikigai-cms-web` already uses — and
-**this crate does not have it**. Until it does, do not bind a kernel with
-sensitive mounts beyond loopback.
+### The ceiling
+
+Read-only is not safe on its own. This face composes the config home's generic
+`mount` lines, so on a typical machine it fronts the browse family, the
+persistent store and the work ledger alike — and until ledger #224/#837 it
+issued every request as **root**. On 2026-10-07 a LAN-bound 8642 listed the
+whole work ledger and answered `urn:iki:store:select` with 12,319 ledger quads,
+to anyone on the network: the mounted peer enforces its scopes exactly, and
+root holds them all.
+
+Now the face holds **one capability, its ceiling**, chosen at startup, and
+every route issues under it: `/{uri}`, `HEAD`, the annotation `POST`, both `/k/`
+commands, `/sparql` (GET, POST and the editor page) and the index. There is no
+header, query parameter or `as=` that selects a capability, so a route cannot
+reach past it.
+
+```toml
+# one scope per line; repeatable `--cap SCOPE` flags replace these wholesale
+web.cap = "urn:cap:browse:read:*"
+web.cap = "urn:cap:store:read:graph:urn:iki:browse:graph:default"
+```
+
+| ceiling | loopback | beyond loopback |
+| --- | --- | --- |
+| unset | root, as before (the local owner) | **refuses to start**, naming `web.cap` and the example above |
+| set | exactly those scopes | exactly those scopes |
+
+There is deliberately no spelling for "root, on purpose, on the LAN": a LAN face
+with no ceiling is the defect above, and failing loud at the moment someone
+widens the bind is what stops it recurring quietly. The index page (`GET /`) and
+the startup line state the ceiling in force.
+
+**The browse-only ceiling** (the two lines above, `ceiling::BROWSE_ONLY`) is
+gonk's `--browse read` role, scope for scope: every browse root's trees, files,
+git state and annotations, plus the browse graph's quads through
+`urn:iki:store:graph-*` and gonk's `urn:sparql:*` (whose default dataset is the
+union of the graphs the caller may read). No ledger token, no store-wide
+`urn:cap:store:read`, no `urn:cap:annotate`, no `urn:cap:net:*` (nothing spends
+inference). `urn:cap:browse:read:*` is every root the BROWSE PEER serves;
+`urn:cap:browse:read:{root}` (one line each) names roots instead.
+
+⚠ **A ceiling narrows only what a peer enforces.** Measured 2026-10-07 through
+today's dev-server mounts: under the browse-only ceiling the dev server still
+served `urn:repo:folio:*` (it is a dev-server browse root, and the ceiling
+grants every root) and its `urn:sparql:*` answered over its whole store (2,374
+quads, `folio`'s included) whatever capability arrived. Through gonk the same
+ceiling read the browse graph and nothing else. So the ceiling and the
+dev-server cutover go together: point browse and `/sparql` at gonk before
+binding beyond loopback.
+
+The capability crosses the IPC wire: the mount resolver carries it in `IssueAs`
+and the peer resolves under it, clamped to its authenticated principal.
+`tests/conformance.rs` proves a declared scope enforced across an `override`
+mount; `tests/ceiling.rs` proves a scope checked at RUNTIME (a per-graph SPARQL
+union) across the `prefer` mounts a machine config actually uses — which, until
+this arc, dropped the capability at the wire and resolved on the peer as root.
+
+What this is not: authentication. Every caller on the network gets the same
+ceiling. Per-person authority is a passkey login minting a capability-scoped
+workspace — the shape `ikigai-cms-web` uses and gonk's HTTP door already has —
+and **this crate does not have it**. Choose the ceiling for the least trusted
+person on the network.
+
+### Putting 8642 on the LAN
+
+The config-home lines, after gonk serves `urn:sparql:*` (gonk main since ledger
+#836) and with the dev-server mounts cut over to it:
+
+```toml
+mount = "prefer urn:repo:=/Users/you/.ikigai/gonk.sock"
+mount = "prefer urn:iki:annotation=/Users/you/.ikigai/gonk.sock"
+web.mount = "prefer urn:sparql:=/Users/you/.ikigai/gonk.sock"
+web.bind = "0.0.0.0:8642"
+web.cap = "urn:cap:browse:read:*"
+web.cap = "urn:cap:store:read:graph:urn:iki:browse:graph:default"
+```
+
+Then install this binary (`cargo install --locked …`) and restart the face so it
+reads them; the startup line in `/tmp/ikigai-web.log` names the ceiling. Under
+launchd that is `just -f ~/git-personal/ikigai-devtools/justfile reregister
+--only web`. With `KeepAlive`, a LAN bind and no `web.cap` restarts every 10
+seconds and logs the refusal each time: the fix is the two `web.cap` lines, not
+the bind.
 
 ## The face
 
@@ -140,13 +208,19 @@ is always `Verb::Source`. The face is **read-only**: update forms
 (INSERT/DELETE/…) are rejected loudly before the kernel sees them, so
 `POST /sparql` does not widen the write surface.
 
-The `urn:sparql:*` space typically lives on the dev server (its shared live
-store: explanations, annotations, review passes). Mount it for this process
-only:
+The `urn:sparql:*` space lives on gonk (its store: explanations, annotations,
+review passes, the ledgers' graphs), or on the dev server it replaces. Mount it
+for this process only:
 
 ```toml
-web.mount = "prefer urn:sparql:=~/.ikigai/dev.sock"
+web.mount = "prefer urn:sparql:=~/.ikigai/gonk.sock"
 ```
+
+Every query runs under the face's [ceiling](#the-ceiling): through gonk, the
+default dataset is the union of the graphs the ceiling may read. An `Accept`
+type the query form cannot answer in is skipped rather than forwarded (a
+CONSTRUCT listing `application/sparql-results+json` first gets Turtle, not a
+400; ledger #839).
 
 `web.mount` (not a bare `mount` line) because the key is web-scoped: the CLI
 hosts read `mount` and never `web.mount`, so a machine-wide `mount` line would

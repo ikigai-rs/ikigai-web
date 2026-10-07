@@ -14,6 +14,8 @@ use ikigai_core::{ArgRef, Capability, Error, Expiry, Iri, Kernel, Representation
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+use crate::ceiling::Ceiling;
+
 /// Largest accepted request head (request line + headers).
 const MAX_HEAD: usize = 64 * 1024;
 /// Largest accepted body (annotations are small).
@@ -33,6 +35,8 @@ pub enum Posture {
     /// not gated — every request that is not GET/HEAD is refused before
     /// dispatch, except `POST /sparql`, whose body is a QUERY (that face is
     /// read-only by its own construction; see [`crate::sparql`]).
+    /// And reads are bounded by the capability ceiling, which this posture
+    /// REQUIRES: [`serve`] refuses an unset one ([`crate::ceiling`]).
     ReadOnly,
 }
 
@@ -57,20 +61,63 @@ pub async fn bind(addr: std::net::SocketAddr) -> std::io::Result<TcpListener> {
     TcpListener::bind(addr).await
 }
 
-/// Accept forever, one task per connection.
+/// What every route holds: the kernel, and the ONE capability every request it
+/// issues goes out under — the ceiling, narrowed from root once at startup.
+///
+/// ★ This is the only place in the crate that hands a capability to the kernel.
+/// The fields are private and [`Face::issue`] is the only way a route reaches
+/// the kernel's resolution, so no route can thread a capability of its own, and
+/// no header, query parameter or `as=` can select one: a route written
+/// carelessly still cannot reach past the ceiling. (The library this replaces
+/// the shape of is `ikigai-web`'s `fixed_cap` behind its `CapFn` seam in
+/// ikigai-cli; this server has its own HTTP loop, so the seam is this struct.)
+pub(crate) struct Face {
+    kernel: Arc<Kernel>,
+    capability: Capability,
+    ceiling: Ceiling,
+    posture: Posture,
+}
+
+impl Face {
+    /// Resolve `request` under the ceiling — the one door to the kernel.
+    pub(crate) async fn issue(&self, request: Request) -> ikigai_core::Result<Representation> {
+        self.kernel.issue(request, &self.capability).await
+    }
+
+    /// The catalog rows the index lists: endpoint PATTERNS, not data. Reading
+    /// any of them still goes through [`Face::issue`].
+    fn entries(&self) -> Vec<ikigai_core::SpaceEntry> {
+        self.kernel.entries().unwrap_or_default()
+    }
+}
+
+/// Accept forever, one task per connection, every request issued under
+/// `ceiling` (see [`crate::ceiling`]).
 ///
 /// The posture is derived HERE, from the listener itself — not passed in — so
 /// a non-loopback listener with a live write surface cannot be constructed:
 /// there is no parameter to get wrong. If the socket cannot even report its
-/// address, the server refuses to start rather than guess.
-pub async fn serve(kernel: Arc<Kernel>, listener: TcpListener) -> ! {
+/// address, the server refuses to start rather than guess. And the same
+/// derivation decides whether `ceiling` may serve: an unset ceiling (root) on a
+/// non-loopback listener is refused here, not merely in the binary, so no
+/// caller of this library can put root on the network either.
+pub async fn serve(kernel: Arc<Kernel>, listener: TcpListener, ceiling: Ceiling) -> ! {
     let posture = Posture::of(&listener)
         .expect("refusing to serve: cannot read the bound address to derive the trust posture");
+    if let Err(refusal) = ceiling.admits(posture) {
+        panic!("{refusal}");
+    }
+    let face = Arc::new(Face {
+        kernel,
+        capability: ceiling.capability(),
+        ceiling,
+        posture,
+    });
     loop {
         if let Ok((stream, _peer)) = listener.accept().await {
-            let kernel = Arc::clone(&kernel);
+            let face = Arc::clone(&face);
             tokio::spawn(async move {
-                let _ = handle(kernel, stream, posture).await;
+                let _ = handle(face, stream).await;
             });
         }
     }
@@ -78,14 +125,10 @@ pub async fn serve(kernel: Arc<Kernel>, listener: TcpListener) -> ! {
 
 /// One connection: read a request (bounded, within a time budget), respond,
 /// close.
-async fn handle(
-    kernel: Arc<Kernel>,
-    mut stream: TcpStream,
-    posture: Posture,
-) -> std::io::Result<()> {
+async fn handle(face: Arc<Face>, mut stream: TcpStream) -> std::io::Result<()> {
     let parsed = tokio::time::timeout(READ_BUDGET, read_request(&mut stream)).await;
     let resp = match parsed {
-        Ok(Ok(req)) => respond(&kernel, req, posture).await,
+        Ok(Ok(req)) => respond(&face, req).await,
         Ok(Err(status)) => error_resp(status, "malformed request"),
         Err(_elapsed) => error_resp(408, "request read timed out"),
     };
@@ -434,7 +477,8 @@ fn post_allowed(uri: &str) -> bool {
 }
 
 /// Dispatch one parsed request against the kernel.
-async fn respond(kernel: &Kernel, req: HttpRequest, posture: Posture) -> Resp {
+async fn respond(face: &Face, req: HttpRequest) -> Resp {
+    let posture = face.posture;
     // The read-only gate — ONE choke point, before any route parsing, so no
     // later route (today's or a future one) can widen the surface by
     // forgetting a check. `POST /sparql` passes: its body is a query, and that
@@ -454,16 +498,16 @@ async fn respond(kernel: &Kernel, req: HttpRequest, posture: Posture) -> Resp {
         return resp;
     }
     if req.path == "/" {
-        return index(kernel).await;
+        return index(face).await;
     }
     if req.path == "/htmx.min.js" {
         return htmx_js();
     }
     if req.path == "/sparql" {
-        return crate::sparql::respond(kernel, &req).await;
+        return crate::sparql::respond(face, &req).await;
     }
     if let Some(command) = req.path.strip_prefix("/k/") {
-        return k_command(kernel, &req, command.to_string()).await;
+        return k_command(face, &req, command.to_string()).await;
     }
     if let Some(start) = req.path.strip_prefix("/browse/") {
         return browse_shell(start, posture);
@@ -479,9 +523,9 @@ async fn respond(kernel: &Kernel, req: HttpRequest, posture: Posture) -> Resp {
         );
     }
     match req.method.as_str() {
-        "GET" => get(kernel, &req, target).await,
-        "HEAD" => head(kernel, target).await,
-        "POST" => post(kernel, &req, target).await,
+        "GET" => get(face, &req, target).await,
+        "HEAD" => head(face, target).await,
+        "POST" => post(face, &req, target).await,
         _ => {
             let mut resp = error_resp(405, "method not supported");
             resp.headers
@@ -493,7 +537,7 @@ async fn respond(kernel: &Kernel, req: HttpRequest, posture: Posture) -> Resp {
 
 /// GET → Source. Query args pass through as invocation args; the `Accept`
 /// header (or an explicit `?as=`) selects the face.
-async fn get(kernel: &Kernel, req: &HttpRequest, target: Iri) -> Resp {
+async fn get(face: &Face, req: &HttpRequest, target: Iri) -> Resp {
     let mut request = Request::new(Verb::Source, target);
     let mut explicit_as = false;
     for (k, v) in &req.query {
@@ -505,7 +549,7 @@ async fn get(kernel: &Kernel, req: &HttpRequest, target: Iri) -> Resp {
             request = request.with_arg("as", ArgRef::Inline(face.as_bytes().to_vec()));
         }
     }
-    match kernel.issue(request, &Capability::root()).await {
+    match face.issue(request).await {
         Ok(repr) => source_resp(req, repr),
         Err(e) => error_resp(status_of(&e), &e.to_string()),
     }
@@ -513,9 +557,9 @@ async fn get(kernel: &Kernel, req: &HttpRequest, target: Iri) -> Resp {
 
 /// HEAD → Exists: 200 (no body) when the resource reports `true`, else 404.
 /// This is the ROC-honest map — an existence probe, not a body-less GET.
-async fn head(kernel: &Kernel, target: Iri) -> Resp {
+async fn head(face: &Face, target: Iri) -> Resp {
     let request = Request::new(Verb::Exists, target);
-    let mut resp = match kernel.issue(request, &Capability::root()).await {
+    let mut resp = match face.issue(request).await {
         Ok(repr) => {
             if repr.bytes.trim_ascii() == b"true" {
                 error_resp(200, "")
@@ -534,7 +578,7 @@ async fn head(kernel: &Kernel, target: Iri) -> Resp {
 /// invocation args (the htmx overlay's shape); any other body is the piped
 /// `content`, with its Content-Type surfaced as the `content-type` arg. Query
 /// args pass through too; body fields win on collision.
-async fn post(kernel: &Kernel, req: &HttpRequest, target: Iri) -> Resp {
+async fn post(face: &Face, req: &HttpRequest, target: Iri) -> Resp {
     let uri = target.as_str();
     if !post_allowed(uri) {
         let mut resp = error_resp(
@@ -575,7 +619,7 @@ async fn post(kernel: &Kernel, req: &HttpRequest, target: Iri) -> Resp {
     for (k, v) in args {
         request = request.with_arg(k, ArgRef::Inline(v));
     }
-    match kernel.issue(request, &Capability::root()).await {
+    match face.issue(request).await {
         Ok(repr) => Resp {
             status: 200,
             headers: vec![
@@ -603,7 +647,7 @@ async fn post(kernel: &Kernel, req: &HttpRequest, target: Iri) -> Resp {
 /// invocation args (the htmx overlay's shape), and any other body arrives as
 /// the piped `content` with its `Content-Type` as `content-type`. The command's
 /// own `k=v` tokens come first and the body wins on collision.
-async fn k_command(kernel: &Kernel, req: &HttpRequest, command: String) -> Resp {
+async fn k_command(face: &Face, req: &HttpRequest, command: String) -> Resp {
     let mut tokens = command.split_whitespace();
     let (Some(verb_word), Some(iri)) = (tokens.next(), tokens.next()) else {
         return error_resp(400, "expected /k/<source|sink> <iri> [k=v ...]");
@@ -624,7 +668,7 @@ async fn k_command(kernel: &Kernel, req: &HttpRequest, command: String) -> Resp 
             for (k, v) in args {
                 request = request.with_arg(k, ArgRef::Inline(v.into_bytes()));
             }
-            match kernel.issue(request, &Capability::root()).await {
+            match face.issue(request).await {
                 Ok(repr) => source_resp(req, repr),
                 Err(e) => error_resp(status_of(&e), &e.to_string()),
             }
@@ -685,7 +729,7 @@ async fn k_command(kernel: &Kernel, req: &HttpRequest, command: String) -> Resp 
             for (k, v) in merged {
                 request = request.with_arg(k, ArgRef::Inline(v.into_bytes()));
             }
-            match kernel.issue(request, &Capability::root()).await {
+            match face.issue(request).await {
                 Ok(repr) => Resp {
                     status: 200,
                     headers: vec![
@@ -823,17 +867,14 @@ fn browse_roots(entries: &[ikigai_core::SpaceEntry]) -> std::collections::BTreeS
 /// as links, so Safari lands somewhere useful. Derived entirely from
 /// resolution and `kernel.entries()` (the catalog IS the machine-legible
 /// face); an asleep peer simply contributes nothing.
-async fn index(kernel: &Kernel) -> Resp {
-    let mut entries = kernel.entries().unwrap_or_default();
+async fn index(face: &Face) -> Resp {
+    let mut entries = face.entries();
     entries.sort_by(|a, b| a.pattern.cmp(&b.pattern));
     let roots = browse_roots(&entries);
     // Best-effort: the repo list is itself a resource; no peer, no scan names.
     let mut names: Vec<String> = roots.iter().cloned().collect();
     if let Ok(target) = Iri::parse("urn:repo:list") {
-        if let Ok(repr) = kernel
-            .issue(Request::new(Verb::Source, target), &Capability::root())
-            .await
-        {
+        if let Ok(repr) = face.issue(Request::new(Verb::Source, target)).await {
             for line in String::from_utf8_lossy(&repr.bytes).lines() {
                 if let Some(name) = line.split('\t').next().filter(|n| !n.is_empty()) {
                     names.push(name.to_string());
@@ -877,6 +918,24 @@ async fn index(kernel: &Kernel) -> Resp {
             html_escape(&entry.endpoint)
         ));
     }
+    // The ceiling in force, stated where an operator looks: what this face can
+    // read is exactly what these scopes reach, whoever is asking.
+    let ceiling = match face.ceiling.scopes() {
+        None => "<h2>Capability ceiling</h2><p>None: every request is issued as root. \
+                 This face is bound to loopback, so its caller is the machine's owner.</p>"
+            .to_string(),
+        Some(scopes) => {
+            let items: String = scopes
+                .iter()
+                .map(|scope| format!("<li><code>{}</code></li>", html_escape(scope)))
+                .collect();
+            format!(
+                "<h2>Capability ceiling</h2><p>Every request through this face holds \
+                 these scopes and nothing more; the catalog above lists what is mounted, \
+                 not what the ceiling reaches.</p><ul class=\"ceiling\">{items}</ul>"
+            )
+        }
+    };
     let body = format!(
         "<!doctype html><html><head><meta charset=\"utf-8\">\
          <title>ikigai</title>\
@@ -889,7 +948,8 @@ async fn index(kernel: &Kernel) -> Resp {
          <p><a href=\"/sparql\">SPARQL editor</a> \u{2014} the shared RDF store \
          (explanations, annotations, review passes), queryable.</p>\
          {repos}\
-         <h2>Catalog</h2><ul>\n{rows}</ul></body></html>\n"
+         <h2>Catalog</h2><ul>\n{rows}</ul>\
+         {ceiling}</body></html>\n"
     );
     Resp {
         status: 200,

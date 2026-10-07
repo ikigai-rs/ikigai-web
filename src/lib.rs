@@ -10,51 +10,61 @@
 //!
 //! ## Trust posture
 //!
-//! The server binds **127.0.0.1 by default**. On loopback the trust model is
-//! *the local owner*, the same posture the dev socket's peer-credential check
+//! Two settings decide what this face exposes, and they are independent: the
+//! BIND (who can connect) and the capability CEILING (what any request may
+//! read or write once connected).
+//!
+//! **The bind.** 127.0.0.1 by default. On loopback the trust model is *the
+//! local owner*, the same posture the dev socket's peer-credential check
 //! takes: anything that can open a loopback connection on this machine is the
-//! machine's owner.
-//!
-//! ★ **Every request this face issues goes under [`ikigai_core::Capability::root`]**
-//! — every verb, every route, the `/k/` adapter included — and there is no
-//! parameter, header or config key by which it could be anything else. So a
-//! declared cap scope is never the gate here: what protects the one write route
-//! is the route allowlist (`serve::ANNOTATION_ROOTS`, colon-anchored) and the
-//! bind posture below. `tests/route_gate.rs` pins both halves — the same Sink a
-//! capability lacking its declared scope is refused at the kernel, accepted
-//! through the route — so the passkey → capability-workspace arc, when it
-//! reaches this face, announces itself as a failing test rather than a quiet
-//! widening.
-//!
-//! The capability itself DOES cross the IPC wire (the client carries it in
-//! `IssueAs`; the peer resolves under it, clamped to its authenticated
-//! principal) — `tests/conformance.rs` proves a peer enforcing a declared scope
-//! across a real mount, with the refused write landing nothing. What is missing
-//! is not the transport but anything at this edge that would narrow root before
-//! handing it over.
-//!
-//! `web.bind` (config) / `--bind` (flag) can widen the bind for a LAN demo
-//! (`web.bind = "0.0.0.0:8642"`) — and off loopback the server is **read-only
-//! by construction**, not by per-route discipline: one gate ahead of all
-//! dispatch refuses everything that is not GET/HEAD with a 403, so the write
-//! surface (the annotation Sink, in both its spellings) is GONE, and no
+//! machine's owner. `web.bind` (config) / `--bind` (flag) widens it for the
+//! LAN (`web.bind = "0.0.0.0:8642"`), and off loopback the server is
+//! **read-only by construction**, not by per-route discipline: one gate ahead
+//! of all dispatch refuses everything that is not GET/HEAD with a 403, so the
+//! write surface (the annotation Sink, in both its spellings) is GONE, and no
 //! future route can widen it by forgetting a check. The one exception is
-//! `POST /sparql`, whose body is a QUERY — that face is read-only by its own
-//! construction ([`sparql`] rejects update forms before the kernel sees
-//! them). The posture is derived from the socket ACTUALLY bound, inside
-//! [`serve::serve`] itself — there is no parameter by which a non-loopback
-//! listener could start with a live write surface. The browse shell also
-//! stops offering the annotate form off loopback (presentation only; the
-//! gate is the boundary).
+//! `POST /sparql`, whose body is a QUERY ([`sparql`] rejects update forms
+//! before the kernel sees them). The posture is derived from the socket
+//! ACTUALLY bound, inside [`serve::serve`] itself. The browse shell also stops
+//! offering the annotate form off loopback (presentation only; the gate is the
+//! boundary).
 //!
-//! This is deliberately **trust-the-LAN, for demos**: anyone on the network
-//! can read whatever the mounted peers serve, and there is intentionally no
-//! auth theater in front of that (no token in a URL, no password form — a
-//! decoration that suggests a boundary it doesn't enforce is worse than the
-//! honest posture line at startup). Real authentication here is the passkey →
-//! capability-workspace arc (a WebAuthn login mints a capability-scoped
-//! workspace, the `ikigai-cms-web` lineage); until that lands, do not bind a
-//! kernel with sensitive mounts beyond loopback.
+//! **The ceiling** ([`ceiling`]). Read-only is not the same as safe: this face
+//! composes the config home's GENERIC `mount` lines, so on a typical machine it
+//! fronts the browse family, the persistent store and the work ledger alike.
+//! Until ledger #224/#837 every request went out as
+//! [`ikigai_core::Capability::root`], and on 2026-10-07 a LAN-bound 8642 listed
+//! the whole work ledger and answered `urn:iki:store:select` with 12,319 ledger
+//! quads to anyone on the network. Now the face holds ONE capability, chosen
+//! at startup from `web.cap` / `--cap`, and every route issues under it
+//! (`serve::Face` is the only door to the kernel): `/{uri}`, `HEAD`, the
+//! annotation `POST`, both `/k/` commands, `/sparql` and the index. No header,
+//! query parameter or `as=` selects a capability, so a careless route cannot
+//! reach past it.
+//!
+//! - Ceiling **unset on loopback**: root, as before (the local owner).
+//! - Ceiling **unset off loopback**: the server REFUSES TO START, in the binary
+//!   before it binds and in [`serve::serve`] for any library caller. There is
+//!   deliberately no spelling for "root on the LAN".
+//! - Ceiling **set**: every request, on any bind, holds exactly those scopes.
+//!   [`ceiling::BROWSE_ONLY`] is the documented LAN example: browse plus the
+//!   browse graph over `/sparql`, no ledger, no store-wide reads, no inference.
+//!
+//! The capability CROSSES the IPC wire: the mount resolver carries it in
+//! `IssueAs`, and the peer resolves under it, clamped to its authenticated
+//! principal. `tests/conformance.rs` proves a peer enforcing a declared scope
+//! across an `override` mount; `tests/ceiling.rs` proves a peer that checks a
+//! scope at RUNTIME (a per-graph SPARQL union, gonk's rule) across the `prefer`
+//! mounts a machine config actually uses, which until this arc DROPPED the
+//! capability at the wire (see `mounts.rs`, `LazyIpcResolver::issue_as`).
+//!
+//! What this is not: authentication. Every caller on the LAN gets the same
+//! ceiling; there is no per-person capability and no auth theater in front of
+//! it (no token in a URL, no password form). Per-person authority is the
+//! passkey → capability-workspace arc (a WebAuthn login mints a scoped
+//! workspace, the `ikigai-cms-web` lineage, and gonk's HTTP door already does
+//! it). Until then, choose the ceiling for the least trusted person on the
+//! network.
 //!
 //! ## Verb map
 //!
@@ -127,6 +137,7 @@
 //! already differ per face. `HEAD` is exempt: it maps to `Exists`, an existence
 //! probe with no representation to validate.
 
+pub mod ceiling;
 pub mod config;
 pub mod mounts;
 pub mod serve;

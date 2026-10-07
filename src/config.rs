@@ -21,9 +21,15 @@
 //! - `web.port` — shorthand for `web.bind = "127.0.0.1:{port}"` (a `--port`
 //!   flag overrides). `web.bind` and `web.port` are ONE setting spelled two
 //!   ways: setting both is a loud error, not a precedence puzzle.
+//! - `web.cap` (repeatable, one scope per line) — the capability CEILING: every
+//!   request this face issues holds exactly these scopes. Repeatable `--cap`
+//!   flags replace the config lines wholesale. Required off loopback; see
+//!   [`crate::ceiling`].
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+
+use crate::ceiling::Ceiling;
 
 /// The port the server binds when neither flags nor config say otherwise.
 pub const DEFAULT_PORT: u16 = 8642;
@@ -93,6 +99,25 @@ pub fn resolve_bind(
         return Ok(SocketAddr::from(([127, 0, 0, 1], port)));
     }
     Ok(SocketAddr::from(([127, 0, 0, 1], DEFAULT_PORT)))
+}
+
+/// The effective capability ceiling, from flags and config.
+///
+/// `--cap` flags (repeatable, one scope each) replace every `web.cap` line
+/// wholesale, the way `--bind` replaces `web.bind`: an operator narrowing a
+/// demo on the command line gets exactly what they typed, never a union with a
+/// broader config. Neither given = [`Ceiling::unset`] (root), which
+/// [`Ceiling::admits`] refuses off loopback. A malformed scope at either level
+/// is a loud error naming its spelling.
+pub fn resolve_ceiling(cap_flags: &[String], config_text: &str) -> Result<Ceiling, String> {
+    if !cap_flags.is_empty() {
+        return Ceiling::scoped(cap_flags.iter().cloned()).map_err(|e| format!("--cap: {e}"));
+    }
+    let lines = values_for(config_text, "web.cap");
+    if lines.is_empty() {
+        return Ok(Ceiling::unset());
+    }
+    Ceiling::scoped(lines).map_err(|e| format!("web.cap: {e}"))
 }
 
 /// The first `key = value` line for `key` in `text`, trimmed and unquoted.
@@ -212,6 +237,37 @@ mod tests {
         assert!(err.starts_with("web.bind"), "err was: {err}");
         let err = resolve_bind(None, None, "web.port = \"nope\"\n").unwrap_err();
         assert!(err.starts_with("web.port"), "err was: {err}");
+    }
+
+    #[test]
+    fn the_ceiling_walks_flags_then_config_then_unset() {
+        let config = "web.cap = \"urn:cap:browse:read:*\"\n\
+                      web.cap = 'urn:cap:store:read:graph:urn:iki:browse:graph:default'\n";
+        let scopes = |c: Ceiling| {
+            c.scopes()
+                .map(|s| s.iter().cloned().collect::<Vec<_>>())
+                .unwrap_or_default()
+        };
+        // Config lines, one scope each, in a set.
+        assert_eq!(
+            scopes(resolve_ceiling(&[], config).expect("config")),
+            vec![
+                "urn:cap:browse:read:*".to_string(),
+                "urn:cap:store:read:graph:urn:iki:browse:graph:default".to_string(),
+            ]
+        );
+        // Flags replace the config wholesale: never a union with it.
+        let flag = vec!["urn:cap:browse:read:ikigai-core".to_string()];
+        assert_eq!(scopes(resolve_ceiling(&flag, config).expect("flag")), flag);
+        // Neither: unset, which is root.
+        assert_eq!(resolve_ceiling(&[], ""), Ok(Ceiling::unset()));
+        // A malformed scope names its spelling.
+        let err = resolve_ceiling(&[], "web.cap = \"a b\"\n").unwrap_err();
+        assert!(err.starts_with("web.cap:"), "{err}");
+        let err = resolve_ceiling(&[], "web.cap = \"\"\n").unwrap_err();
+        assert!(err.starts_with("web.cap:"), "{err}");
+        let err = resolve_ceiling(&["root".to_string()], "").unwrap_err();
+        assert!(err.starts_with("--cap:"), "{err}");
     }
 
     #[test]

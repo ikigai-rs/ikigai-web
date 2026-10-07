@@ -13,23 +13,21 @@
 //! after `invoke` returns `Ok`. The disk (there) and a shared vector (here) are the only
 //! things that can be asked.
 //!
-//! ## ★ And the finding this file exists to pin
+//! ## ★ And the finding this file pinned, now changed on purpose
 //!
 //! `ikigai-web-demo`'s adapter runs each step under a SESSION capability, so a step naming a
-//! gated resource is refused at the kernel's floor. **This face has no such capability.**
-//! Every request `serve.rs` issues — `get`, `head`, `post`, both `/k/` commands — is issued
-//! under `Capability::root()`, and there is no parameter, header or config key by which it
-//! could be anything else. So on the annotation route the kernel's floor is not merely
-//! unreached, it is *unreachable*: the same Sink that a capability lacking
-//! `urn:cap:iki:annotate` is refused at the kernel is ACCEPTED through the route.
+//! gated resource is refused at the kernel's floor. Until ledger #224/#837 this face had no
+//! such capability: every request `serve.rs` issued went out as `Capability::root()`, and
+//! this file pinned that as a failing-first test, so the arc that narrowed root would
+//! announce itself here rather than as a quiet change.
 //!
-//! [`the_face_issues_under_root_so_a_declared_scope_is_never_the_gate`] pins both halves of
-//! that, because it is a design fact and not an accident: what protects this server's one
-//! write route is the ROUTE ALLOW-LIST (two annotation roots, colon-anchored) and the BIND
-//! POSTURE (off loopback the write surface is gone), which is exactly why the crate docs call
-//! loopback's trust model "the local owner" and say plainly that real authentication here is
-//! the passkey → capability-workspace arc. If that arc lands and this face starts minting
-//! attenuated capabilities, this test is where the change announces itself.
+//! That arc landed. The face now issues every request under ONE capability, its CEILING
+//! (`web.cap` / `--cap`, `ikigai_web_server::ceiling`), and
+//! [`the_face_issues_under_its_ceiling_so_a_declared_scope_gates_the_route`] pins all three
+//! states on the annotation route: unset on loopback is root, so the write lands (the local
+//! owner, unchanged); a ceiling WITHOUT the endpoint's declared scope is refused at the
+//! kernel's floor through the route, with nothing written; a ceiling WITH it lands. The
+//! route allow-list and the bind posture still stand in front of all of that.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -39,6 +37,7 @@ use ikigai_core::{
     ActionSpec, ArgRef, ArgSpec, Capability, Description, EndpointSpace, Error, Exact, Fallback,
     FnEndpoint, Iri, Kernel, ReprType, Representation, Request, Space, Verb,
 };
+use ikigai_web_server::ceiling::Ceiling;
 
 /// The scope the annotation endpoint declares — and therefore, per the recipe, enforces.
 const CAP_ANNOTATE: &str = "urn:cap:iki:annotate";
@@ -113,7 +112,7 @@ struct Server {
     witness: Witness,
 }
 
-fn spawn(bind_ip: &str) -> Server {
+fn spawn(bind_ip: &str, ceiling: Ceiling) -> Server {
     let witness: Witness = Arc::default();
     let kernel = Arc::new(witnessed_kernel(Arc::clone(&witness)));
     let addr: std::net::SocketAddr = format!("{bind_ip}:0").parse().expect("a bind address");
@@ -127,7 +126,7 @@ fn spawn(bind_ip: &str) -> Server {
             let listener = ikigai_web_server::serve::bind(addr).await.expect("bind");
             tx.send(listener.local_addr().expect("local_addr"))
                 .expect("send");
-            ikigai_web_server::serve::serve(kernel, listener).await
+            ikigai_web_server::serve::serve(kernel, listener, ceiling).await
         })
     });
     Server {
@@ -144,13 +143,18 @@ fn spawn(bind_ip: &str) -> Server {
 /// witness would carry another test's writes and every assertion here would be about the
 /// interleaving. The cost is a socket per test; the alternative is a flaky witness.
 fn loopback() -> Server {
-    spawn("127.0.0.1")
+    spawn("127.0.0.1", Ceiling::unset())
 }
 
 /// A non-loopback server — `Posture::ReadOnly`. Reached over 127.0.0.1; the posture keys on
-/// the BOUND address, not the caller's.
+/// the BOUND address, not the caller's. Off loopback a ceiling is required, so this one
+/// holds the annotation scope itself: the posture gate, not the ceiling, has to be what
+/// refuses every write here.
 fn readonly() -> Server {
-    let bound = spawn("0.0.0.0");
+    let bound = spawn(
+        "0.0.0.0",
+        Ceiling::scoped([CAP_ANNOTATE]).expect("a valid ceiling"),
+    );
     Server {
         addr: format!("127.0.0.1:{}", bound.addr.port())
             .parse()
@@ -311,26 +315,21 @@ fn every_refusal_happens_in_front_of_the_kernel() {
     );
 }
 
-/// ★ **The face issues under `Capability::root()`, so a declared scope is never the gate
-/// here** — stated as a test because it is the load-bearing difference between this server
-/// and every host that runs steps under a session capability.
-///
-/// Both halves, against the same kernel and the same endpoint:
+/// ★ **The face issues under its CEILING, so once one is set a declared scope gates the
+/// route** — the test that used to pin "always root", turned into the behavior that replaced
+/// it. Against the same kernel and the same endpoint:
 ///
 /// - At the KERNEL, the annotation Sink declares `urn:cap:iki:annotate`, so a capability
 ///   holding no grant under it is refused with a typed `Error::Denied` naming the scope,
-///   before the endpoint runs — the floor, and the witness is untouched (the shape
-///   `ikigai-web-demo`'s `k_adapter.rs` pins for its own gated steps).
-/// - Through the ROUTE, the identical write is ACCEPTED, because `serve.rs` issues every
-///   request under root. The capability is not attenuated, weakened, or derived from
-///   anything about the request; there is nothing to lack.
-///
-/// So the annotation route's protection is the allow-list plus the bind posture, and this
-/// server must not be bound beyond loopback with mounts it does not want the network to
-/// write to — which is precisely what the crate's trust-posture doc says, now with a test
-/// that fails if either half stops being true.
+///   before the endpoint runs, and the witness is untouched.
+/// - Through the ROUTE with the ceiling UNSET (loopback): root, exactly as before this arc,
+///   so the write lands. Loopback's trust model is still the local owner.
+/// - Through the ROUTE with a ceiling that LACKS the scope: the identical write is refused at
+///   the kernel's floor (403, the scope named) and nothing is written, through both the
+///   direct route and the `/k/sink` adapter.
+/// - Through the ROUTE with a ceiling that HOLDS it: the write lands.
 #[test]
-fn the_face_issues_under_root_so_a_declared_scope_is_never_the_gate() {
+fn the_face_issues_under_its_ceiling_so_a_declared_scope_gates_the_route() {
     // The kernel half: the same endpoint, the same request, minus root.
     let witness: Witness = Arc::default();
     let kernel = witnessed_kernel(Arc::clone(&witness));
@@ -346,17 +345,15 @@ fn the_face_issues_under_root_so_a_declared_scope_is_never_the_gate() {
         vec![CAP_ANNOTATE.to_string()],
         "the endpoint declares the scope it enforces"
     );
-    let write = || {
-        Request::new(
-            Verb::Sink,
-            Iri::parse("urn:iki:annotation".to_string()).expect("iri"),
-        )
-        .with_arg("content", ArgRef::Inline(b"unauthorized".to_vec()))
-    };
+    let write = Request::new(
+        Verb::Sink,
+        Iri::parse("urn:iki:annotation".to_string()).expect("iri"),
+    )
+    .with_arg("content", ArgRef::Inline(b"unauthorized".to_vec()));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .expect("runtime");
-    match runtime.block_on(kernel.issue(write(), &Capability::scoped(Vec::<String>::new()))) {
+    match runtime.block_on(kernel.issue(write, &Capability::scoped(Vec::<String>::new()))) {
         Err(Error::Denied(detail)) => assert!(
             detail.contains(CAP_ANNOTATE),
             "the refusal names the declared scope: {detail}"
@@ -365,31 +362,41 @@ fn the_face_issues_under_root_so_a_declared_scope_is_never_the_gate() {
     }
     assert!(
         witness.lock().expect("witness").is_empty(),
-        "the floor refused before `invoke`, so nothing was written — and core traces no \
-         event for it, which is why the witness is the vector and not the tracer"
-    );
-    // The same capability that WOULD be refused is never formed at the HTTP face.
-    runtime
-        .block_on(kernel.issue(write(), &Capability::root()))
-        .expect("root holds every scope");
-    assert_eq!(
-        witness.lock().expect("witness").as_slice(),
-        ["unauthorized".to_string()],
-        "under root the identical write lands"
+        "the floor refused before `invoke`, so nothing was written"
     );
 
-    // The route half, on the live server: accepted, because root is what it issues under.
-    let server = &loopback();
-    let before = wrote(server).len();
-    let (status, body) = post(server.addr, "/urn:iki:annotation", "no-capability-required");
-    assert_eq!(
-        status, 200,
-        "the route issues under root: a write no capability was presented for is accepted"
+    // Unset on loopback: root, so the route accepts a write no scope was presented for.
+    let owner = &loopback();
+    let (status, body) = post(owner.addr, "/urn:iki:annotation", "local-owner");
+    assert_eq!(status, 200, "unset on loopback is root: {body}");
+    assert_eq!(wrote(owner), ["local-owner".to_string()], "and it landed");
+
+    // A ceiling WITHOUT the declared scope: the same write is refused at the kernel, through
+    // both entrances, and nothing lands.
+    let narrowed = &spawn(
+        "127.0.0.1",
+        Ceiling::scoped(["urn:cap:browse:read:*"]).expect("a valid ceiling"),
     );
-    assert!(body.contains("no-capability-required"), "{body}");
-    assert_eq!(
-        wrote(server)[before..],
-        ["no-capability-required".to_string()],
-        "and it really landed"
+    for path in ["/urn:iki:annotation", "/k/sink%20urn:iki:annotation"] {
+        let (status, body) = post(narrowed.addr, path, "past-the-ceiling");
+        assert_eq!(status, 403, "for {path}: {body}");
+        assert!(
+            body.contains(CAP_ANNOTATE),
+            "for {path}, names the scope: {body}"
+        );
+    }
+    assert!(
+        wrote(narrowed).is_empty(),
+        "a ceiling without the scope wrote nothing: {:?}",
+        wrote(narrowed)
     );
+
+    // A ceiling WITH it: the write lands.
+    let granted = &spawn(
+        "127.0.0.1",
+        Ceiling::scoped([CAP_ANNOTATE]).expect("a valid ceiling"),
+    );
+    let (status, body) = post(granted.addr, "/urn:iki:annotation", "within-the-ceiling");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(wrote(granted), ["within-the-ceiling".to_string()]);
 }

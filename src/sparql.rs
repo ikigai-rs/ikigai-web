@@ -24,14 +24,14 @@
 //! `Verb::Source`, so `POST /sparql` widens the verb surface not at all (the
 //! POST body is a query, not a write; SPARQL's own protocol does the same).
 
-use ikigai_core::{ArgRef, Capability, Iri, Kernel, Request, Verb};
+use ikigai_core::{ArgRef, Iri, Request, Verb};
 
-use crate::serve::{error_resp, html_escape, source_resp, status_of, HttpRequest, Resp};
+use crate::serve::{error_resp, html_escape, source_resp, status_of, Face, HttpRequest, Resp};
 
 /// Dispatch `/sparql`. GET executes `?query=`; POST takes the query from a
 /// form body (`query=` field) or a raw body (`application/sparql-query`, or
 /// any non-form body — the bytes ARE the query).
-pub(crate) async fn respond(kernel: &Kernel, req: &HttpRequest) -> Resp {
+pub(crate) async fn respond(face: &Face, req: &HttpRequest) -> Resp {
     if req.method != "GET" && req.method != "POST" {
         let mut resp = error_resp(405, "the /sparql face speaks GET and POST");
         resp.headers
@@ -69,7 +69,7 @@ pub(crate) async fn respond(kernel: &Kernel, req: &HttpRequest) -> Resp {
     // The editor page is the html face — but an explicit `as=` always wins
     // (the page's own JSON/CSV links carry one).
     if explicit_as.is_none() && accepted == Some("text/html") {
-        return editor_page(kernel, query).await;
+        return editor_page(face, query).await;
     }
     let Some(query) = query else {
         return error_resp(400, "missing `query=` (or a POST body carrying the query)");
@@ -78,16 +78,23 @@ pub(crate) async fn respond(kernel: &Kernel, req: &HttpRequest) -> Resp {
         Ok(form) => form,
         Err(reason) => return error_resp(400, &reason),
     };
-    let as_arg = explicit_as.or_else(|| accepted.map(str::to_string));
-    match execute(kernel, form, query, as_arg.as_deref()).await {
+    let as_arg = explicit_as.or_else(|| {
+        req.header("accept")
+            .and_then(|accept| accept_for_form(accept, form))
+            .map(str::to_string)
+    });
+    match execute(face, form, query, as_arg.as_deref()).await {
         Ok(repr) => source_resp(req, repr),
         Err(e) => error_resp(status_of(&e), &e.to_string()),
     }
 }
 
-/// Issue the query through the kernel as `Verb::Source` on `urn:sparql:{form}`.
+/// Issue the query through the kernel as `Verb::Source` on `urn:sparql:{form}`,
+/// under the face's ceiling like every other route. (It was the one route with
+/// its own hardcoded `Capability::root()`, so even a ceiling applied to the
+/// other routes would have left `/sparql` reading every graph a peer serves.)
 async fn execute(
-    kernel: &Kernel,
+    face: &Face,
     form: &str,
     query: &str,
     as_arg: Option<&str>,
@@ -99,7 +106,7 @@ async fn execute(
     if let Some(media) = as_arg {
         request = request.with_arg("as", ArgRef::Inline(media.as_bytes().to_vec()));
     }
-    kernel.issue(request, &Capability::root()).await
+    face.issue(request).await
 }
 
 /// The result media type an `Accept` header asks for — the /sparql-specific
@@ -122,6 +129,23 @@ fn accept_result_type(accept: &str) -> Option<&'static str> {
         }
     }
     None
+}
+
+/// The `as=` an `Accept` header asks for, given the query's FORM: the first
+/// recognized type that form can answer in (SELECT/ASK answer in the results
+/// types, CONSTRUCT/DESCRIBE in RDF syntaxes). A type the form cannot answer is
+/// skipped rather than forwarded, because gonk's faces refuse an `as` of the
+/// other family (400) where the dev server substituted its default: a SPARQL
+/// client listing `application/sparql-results+json` first for a CONSTRUCT was
+/// refused at 8642 after the cutover (ledger #839). `None` = the endpoint's
+/// default face. The html face is decided earlier, by [`accept_result_type`].
+fn accept_for_form(accept: &str, form: &str) -> Option<&'static str> {
+    let graph_form = matches!(form, "construct" | "describe");
+    accept.split(',').find_map(|item| {
+        let media = accept_result_type(item)?;
+        let rdf = matches!(media, "text/turtle" | "application/n-triples");
+        (media != "text/html" && rdf == graph_form).then_some(media)
+    })
 }
 
 /// The query's form — which `urn:sparql:*` endpoint runs it. Read forms only:
@@ -350,7 +374,7 @@ pub fn urlencode(s: &str) -> String {
 /// rendered as a table (SELECT), a boolean (ASK), or Turtle (CONSTRUCT/
 /// DESCRIBE). The page itself is always 200: an editor showing a query error
 /// is a successfully rendered editor.
-async fn editor_page(kernel: &Kernel, query: Option<&str>) -> Resp {
+async fn editor_page(face: &Face, query: Option<&str>) -> Resp {
     let results = match query {
         None => String::new(),
         Some(q) => match query_form(q) {
@@ -363,7 +387,7 @@ async fn editor_page(kernel: &Kernel, query: Option<&str>) -> Resp {
                     "ask" => Some("text/csv"),
                     _ => None,
                 };
-                match execute(kernel, form, q, as_arg).await {
+                match execute(face, form, q, as_arg).await {
                     Err(e) => error_box(&format!("{} ({})", e, status_of(&e))),
                     Ok(repr) => {
                         let text = String::from_utf8_lossy(&repr.bytes);
@@ -764,5 +788,40 @@ mod tests {
         assert_eq!(accept_result_type("text/turtle"), Some("text/turtle"));
         // curl's default: no opinion → the endpoint's default face.
         assert_eq!(accept_result_type("*/*"), None);
+    }
+
+    #[test]
+    fn accept_is_filtered_by_what_the_query_form_can_answer() {
+        let first_results = "application/sparql-results+json, text/turtle;q=0.9";
+        // The defect: the form-blind pick, which was forwarded as `as=` for every form.
+        assert_eq!(
+            accept_result_type(first_results),
+            Some("application/sparql-results+json")
+        );
+        // A CONSTRUCT skips the results type it cannot answer in (ledger #839)...
+        assert_eq!(
+            accept_for_form(first_results, "construct"),
+            Some("text/turtle")
+        );
+        assert_eq!(
+            accept_for_form(first_results, "describe"),
+            Some("text/turtle")
+        );
+        // ...a SELECT keeps it.
+        assert_eq!(
+            accept_for_form(first_results, "select"),
+            Some("application/sparql-results+json")
+        );
+        assert_eq!(
+            accept_for_form("text/turtle, text/csv", "ask"),
+            Some("text/csv")
+        );
+        // Nothing the form can answer: the endpoint's default, never a refusal.
+        assert_eq!(
+            accept_for_form("application/sparql-results+json", "construct"),
+            None
+        );
+        assert_eq!(accept_for_form("text/turtle", "select"), None);
+        assert_eq!(accept_for_form("*/*", "select"), None);
     }
 }

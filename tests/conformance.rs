@@ -536,9 +536,12 @@ fn the_contract_crosses_the_wire_whole() {
 /// and over the wire alike.
 ///
 /// The capability really does cross: `IpcResolver::issue_as` carries it and the server
-/// resolves under it. That is worth pinning here rather than assuming, because this server's
-/// HTTP face never exercises it — see `tests/route_gate.rs`, which records that every
-/// request this face issues goes under `Capability::root()`.
+/// resolves under it. That is worth pinning here rather than assuming, because the HTTP
+/// face's capability CEILING (`tests/ceiling.rs`) is only as good as this crossing. This
+/// test uses an `override` mount, which holds the `IpcResolver` directly; the `prefer`
+/// mounts a machine config uses go through `mounts::LazyIpcResolver`, which dropped the
+/// capability until 2026-10-07, and `tests/ceiling.rs` pins that path with a scope the
+/// peer checks at runtime.
 #[test]
 fn a_declared_scope_is_enforced_across_the_mount_and_the_refusal_writes_nothing() {
     let mounted = mounted("override");
