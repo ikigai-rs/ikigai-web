@@ -10,6 +10,7 @@ use ikigai_core::{
     ArgRef, Capability, Error, Exact, Fallback, FnEndpoint, Iri, Kernel, ReprType, Representation,
     Request, Space, Verb,
 };
+use ikigai_web_server::ceiling::{Ceiling, BROWSE_ONLY};
 
 /// A tiny multi-face endpoint: Source serves faces by `as`, Exists says true.
 fn hello() -> FnEndpoint {
@@ -177,7 +178,15 @@ fn spawn(bind_ip: &str) -> std::net::SocketAddr {
         runtime.block_on(async move {
             let listener = ikigai_web_server::serve::bind(addr).await.unwrap();
             tx.send(listener.local_addr().unwrap()).unwrap();
-            ikigai_web_server::serve::serve(Arc::new(test_kernel()), listener).await
+            // Off loopback a ceiling is required (unset is refused at startup); these
+            // fixtures declare no scopes, so any ceiling serves them. On loopback the
+            // ceiling stays unset: root, the local owner, as before.
+            let ceiling = if addr.ip().is_loopback() {
+                Ceiling::unset()
+            } else {
+                Ceiling::scoped(BROWSE_ONLY).unwrap()
+            };
+            ikigai_web_server::serve::serve(Arc::new(test_kernel()), listener, ceiling).await
         })
     });
     rx.recv().unwrap()

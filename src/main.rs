@@ -3,36 +3,51 @@
 //! Composition and policy live in the library (`ikigai_web_server`); this binary reads
 //! the config home + flags (never environment variables), composes the kernel
 //! from the machine's `mount` lines, and serves. Default bind is loopback (the
-//! full v1 surface); a non-loopback bind serves READ-ONLY — see the library's
-//! trust-posture doc.
+//! full v1 surface); a non-loopback bind serves READ-ONLY and must carry a
+//! capability ceiling (`web.cap` / `--cap`) or the server refuses to start —
+//! see the library's trust-posture doc and `ikigai_web_server::ceiling`.
 
 use std::sync::Arc;
 
-const USAGE: &str =
-    "usage: ikigai-web [--bind IP:PORT | --port N] [--config PATH] [--mount LINE ...]\n\
- \n\
- Serves the machine's mounted kernel over HTTP. Default bind: 127.0.0.1:8642\n\
- (loopback — the full surface). A NON-loopback bind serves read-only: the\n\
- write surface is disabled, GET/HEAD and /sparql queries only.\n\
- \n\
-   --bind IP:PORT address to bind (config: `web.bind`); an IP, not a hostname.\n\
-                  e.g. --bind 0.0.0.0:8642 to demo browse + /sparql to the LAN\n\
-   --port N       shorthand for --bind 127.0.0.1:N (config: `web.port`).\n\
-                  Flags override config wholesale; `web.bind` and `web.port`\n\
-                  are one setting spelled two ways — setting both is an error\n\
-   --config PATH  config file (default: ~/.config/ikigai/config.toml)\n\
-   --mount LINE   additional mount for THIS process only (repeatable; same\n\
-                  grammar as a config `mount` line, e.g.\n\
-                  'prefer urn:sparql:=~/.ikigai/dev.sock'). The persistent\n\
-                  spelling is a `web.mount` line in the config: web-scoped by\n\
-                  key, so the CLI hosts never read it and their local spaces\n\
-                  are never shadowed machine-wide.\n";
+// A raw string, so the option table keeps its indentation: the `\n\` line
+// continuations this used to be written with strip every line's leading
+// whitespace, and `--help` printed the table flush left.
+const USAGE: &str = r#"usage: ikigai-web [--bind IP:PORT | --port N] [--cap SCOPE ...] [--config PATH] [--mount LINE ...]
+
+Serves the machine's mounted kernel over HTTP. Default bind: 127.0.0.1:8642
+(loopback: the full surface). A NON-loopback bind serves read-only (the write
+surface is disabled; GET/HEAD and /sparql queries only) AND needs a capability
+ceiling, or the server refuses to start.
+
+  --bind IP:PORT address to bind (config: `web.bind`); an IP, not a hostname.
+                 e.g. --bind 0.0.0.0:8642 to demo browse + /sparql to the LAN
+  --port N       shorthand for --bind 127.0.0.1:N (config: `web.port`).
+                 Flags override config wholesale; `web.bind` and `web.port`
+                 are one setting spelled two ways: setting both is an error
+  --cap SCOPE    the capability CEILING (repeatable, one urn:cap: scope each;
+                 config: one `web.cap` line per scope; the flags replace the
+                 config lines wholesale). Every request this face issues, on
+                 every route, holds exactly these scopes. Unset on loopback:
+                 root, the local owner. Unset off loopback: refused. The
+                 browse-only ceiling (browse + the browse graph over /sparql,
+                 no ledger, no store-wide reads, no inference):
+                   --cap 'urn:cap:browse:read:*'
+                   --cap urn:cap:store:read:graph:urn:iki:browse:graph:default
+  --config PATH  config file (default: ~/.config/ikigai/config.toml)
+  --mount LINE   additional mount for THIS process only (repeatable; same
+                 grammar as a config `mount` line, e.g.
+                 'prefer urn:sparql:=~/.ikigai/gonk.sock'). The persistent
+                 spelling is a `web.mount` line in the config: web-scoped by
+                 key, so the CLI hosts never read it and their local spaces
+                 are never shadowed machine-wide.
+"#;
 
 fn main() {
     let mut bind_flag: Option<String> = None;
     let mut port_flag: Option<u16> = None;
     let mut config_flag: Option<String> = None;
     let mut mount_flags: Vec<String> = Vec::new();
+    let mut cap_flags: Vec<String> = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -50,6 +65,10 @@ fn main() {
             "--config" => match args.next() {
                 Some(path) => config_flag = Some(path),
                 None => fail("--config: expected a path"),
+            },
+            "--cap" => match args.next() {
+                Some(scope) => cap_flags.push(scope),
+                None => fail("--cap: expected a urn:cap: scope"),
             },
             "--mount" => match args.next() {
                 Some(line) => mount_flags.push(line),
@@ -112,9 +131,26 @@ fn main() {
         Err(e) => fail(&e),
     };
 
+    let ceiling = match ikigai_web_server::config::resolve_ceiling(&cap_flags, &config_text) {
+        Ok(ceiling) => ceiling,
+        Err(e) => fail(&e),
+    };
+    // Refuse a ceiling-less LAN bind BEFORE binding, so the socket never opens.
+    // `serve` re-derives the posture from the socket actually bound and refuses
+    // the same way, so this is the early, legible half and not the only one.
+    let intended = if bind.ip().is_loopback() {
+        ikigai_web_server::serve::Posture::LocalOwner
+    } else {
+        ikigai_web_server::serve::Posture::ReadOnly
+    };
+    if let Err(refusal) = ceiling.admits(intended) {
+        fail(&refusal);
+    }
+
     for line in &lines {
         eprintln!("mount: {:?} {} -> {}", line.kind, line.prefix, line.target);
     }
+    eprintln!("capability ceiling: {}", ceiling.summary());
     let kernel = match ikigai_web_server::mounts::compose(lines) {
         Ok(kernel) => Arc::new(kernel),
         Err(e) => fail(&e),
@@ -149,7 +185,10 @@ fn main() {
                  disabled; GET/HEAD and /sparql queries only"
             ),
         }
-        ikigai_web_server::serve::serve(kernel, listener).await
+        if let Err(refusal) = ceiling.admits(posture) {
+            fail(&refusal);
+        }
+        ikigai_web_server::serve::serve(kernel, listener, ceiling).await
     })
 }
 

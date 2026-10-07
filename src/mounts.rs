@@ -221,6 +221,25 @@ impl Resolver for LazyIpcResolver {
         self.get()?.issue(request)
     }
 
+    /// ★ FORWARD THE CAPABILITY. `Resolver::issue_as` defaults to ignoring it and calling
+    /// [`issue`](Resolver::issue), which the peer resolves under its OWN default authority
+    /// (root, for the socket's owner). Until 2026-10-07 this wrapper did not override it, so
+    /// every `prefer` mount (which is every mount line on a typical machine) silently dropped
+    /// the caller's capability at the wire, while an `override` mount, which holds the
+    /// `IpcResolver` directly, carried it. The local kernel still enforced each endpoint's
+    /// DECLARED scope from its described contract, so a flat requirement looked enforced;
+    /// a peer that checks a scope at runtime (gonk's per-graph SPARQL union, a browse root,
+    /// a store graph) saw root. Found by `tests/ceiling.rs`, whose `/sparql` union read the
+    /// ledger graph under the browse-only ceiling through this wrapper.
+    fn issue_as(
+        &self,
+        request: ikigai_core::Request,
+        capability: &ikigai_core::Capability,
+    ) -> Result<(ikigai_core::Representation, ikigai_resolve::CacheStatus), ikigai_core::Error>
+    {
+        self.get()?.issue_as(request, capability)
+    }
+
     fn is_cached(
         &self,
         request: &ikigai_core::Request,

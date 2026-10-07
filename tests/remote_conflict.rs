@@ -179,7 +179,12 @@ fn spawn_http(kernel: Kernel) -> std::net::SocketAddr {
                 .await
                 .unwrap();
             tx.send(listener.local_addr().unwrap()).unwrap();
-            ikigai_web_server::serve::serve(Arc::new(kernel), listener).await
+            ikigai_web_server::serve::serve(
+                Arc::new(kernel),
+                listener,
+                ikigai_web_server::ceiling::Ceiling::unset(),
+            )
+            .await
         })
     });
     rx.recv().unwrap()
