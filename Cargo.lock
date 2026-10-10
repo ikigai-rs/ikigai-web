@@ -365,6 +365,7 @@ dependencies = [
  "ikigai-resolve",
  "ikigai-vocab",
  "ikigai-wire",
+ "libc",
  "tempfile",
  "tokio",
 ]

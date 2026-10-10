@@ -84,6 +84,9 @@ tempfile = "3"
 # 0.1.30 (both are `^0.1`, so cargo unifies them), so the v7 peer is a hello
 # shim in front of a real v8 server. Already in the graph via ikigai-ipc.
 ikigai-wire = "0.1.30"
+# setrlimit/getrusage/dup2 for `tests/accept_exhaustion.rs`, which lowers a child's descriptor
+# limit, fills it, and measures what the accept loop burns at EMFILE (ledger #753).
+libc = "0.2"
 
 [[bin]]
 name = "ikigai-web"
