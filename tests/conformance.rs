@@ -34,8 +34,10 @@
 //! conformance PENDING #125 asks for, and the shape this server's write route needs
 //! (`tests/route_gate.rs`).
 
+mod ready;
+
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use ikigai_conformance::{Report, Suite};
@@ -221,7 +223,7 @@ fn mounted(mode: &str) -> Mounted {
         // Serves until the process ends; the tempdir outlives every test that uses it.
         let _ = ikigai_ipc::serve(served, &path);
     });
-    wait_for_socket(&socket);
+    ready::socket(&socket);
     let line = format!("{mode} urn:demo:={}", socket.display());
     let kernel = compose(vec![parse_mount_line(&line).expect("a valid mount line")])
         .unwrap_or_else(|e| panic!("compose `{line}`: {e}"));
@@ -230,18 +232,6 @@ fn mounted(mode: &str) -> Mounted {
         kernel,
         ledger,
     }
-}
-
-/// The peer binds on its own thread; `compose` of an eager mount dials immediately, so wait
-/// for the socket to exist rather than racing it.
-fn wait_for_socket(socket: &Path) {
-    for _ in 0..600 {
-        if socket.exists() {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    panic!("the IPC peer never bound {}", socket.display());
 }
 
 // ---------------------------------------------------------------------------
@@ -731,7 +721,7 @@ fn an_alias_mount_re_prefixes_the_peers_kernel_operations_too() {
     std::thread::spawn(move || {
         let _ = ikigai_ipc::serve(served, &path);
     });
-    wait_for_socket(&socket);
+    ready::socket(&socket);
     let kernel = compose(vec![parse_mount_line(&format!(
         "alias urn:edge:={}",
         socket.display()

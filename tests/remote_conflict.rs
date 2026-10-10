@@ -35,6 +35,8 @@
 //! 0.1.30 offers v8, is answered 7 and closed, redials at 7 and is served there:
 //! the per-connection negotiation the v8 release introduced, exercised end to end.
 
+mod ready;
+
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -81,7 +83,7 @@ fn serve_v8(socket: &Path) {
         // Serves until the process ends; the tempdir outlives the test.
         let _ = ikigai_ipc::serve(peer_kernel(), &path);
     });
-    wait_for_socket(socket);
+    ready::socket(socket);
 }
 
 /// A wire-v7 kernel server on `socket`: a hello shim in front of the v8 server
@@ -140,16 +142,6 @@ fn relay_as_v7(mut client: UnixStream, upstream: &Path) {
     let _ = std::io::copy(&mut server, &mut client);
     let _ = client.shutdown(std::net::Shutdown::Write);
     let _ = upward.join();
-}
-
-fn wait_for_socket(socket: &Path) {
-    for _ in 0..600 {
-        if socket.exists() {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    panic!("the IPC peer never bound {}", socket.display());
 }
 
 /// The served kernel, composed the way production composes it: `override`
