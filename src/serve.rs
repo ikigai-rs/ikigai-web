@@ -14,6 +14,7 @@ use ikigai_core::{ArgRef, Capability, Error, Expiry, Iri, Kernel, Representation
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+use crate::accept;
 use crate::ceiling::Ceiling;
 
 /// Largest accepted request head (request line + headers).
@@ -101,7 +102,26 @@ impl Face {
 /// derivation decides whether `ceiling` may serve: an unset ceiling (root) on a
 /// non-loopback listener is refused here, not merely in the binary, so no
 /// caller of this library can put root on the network either.
+///
+/// An accept error never spins and rarely ends the loop (ledger #753, the private `accept`
+/// module): one connection's failure is skipped, running out of descriptors is backed off and
+/// retried, and only a dead listener stops it. Since this signature cannot return, a dead
+/// listener PANICS here, naming the error; [`serve_until_error`] is the same loop handing the
+/// error back.
 pub async fn serve(kernel: Arc<Kernel>, listener: TcpListener, ceiling: Ceiling) -> ! {
+    let error = serve_until_error(kernel, listener, ceiling).await;
+    panic!("ikigai-web: the listener is dead, so the server stops: {error}");
+}
+
+/// [`serve`], returning the error that ended it instead of panicking: it returns only when the
+/// listener itself is unusable (`EBADF`, `ENOTSOCK`, `EINVAL`, `EFAULT`). The startup
+/// refusals — an unreadable bound address, an unset ceiling off loopback — still panic, as in
+/// [`serve`]: they are a caller's misuse, not a runtime condition.
+pub async fn serve_until_error(
+    kernel: Arc<Kernel>,
+    listener: TcpListener,
+    ceiling: Ceiling,
+) -> std::io::Error {
     let posture = Posture::of(&listener)
         .expect("refusing to serve: cannot read the bound address to derive the trust posture");
     if let Err(refusal) = ceiling.admits(posture) {
@@ -113,13 +133,26 @@ pub async fn serve(kernel: Arc<Kernel>, listener: TcpListener, ceiling: Ceiling)
         ceiling,
         posture,
     });
+    let mut backoff = accept::Backoff::default();
     loop {
-        if let Ok((stream, _peer)) = listener.accept().await {
-            let face = Arc::clone(&face);
-            tokio::spawn(async move {
-                let _ = handle(face, stream).await;
-            });
-        }
+        let stream = match listener.accept().await {
+            Ok((stream, _peer)) => {
+                backoff.succeeded();
+                stream
+            }
+            Err(e) => match accept::classify(&e) {
+                accept::Fault::Skip => continue,
+                accept::Fault::BackOff => {
+                    tokio::time::sleep(backoff.failed(&e)).await;
+                    continue;
+                }
+                accept::Fault::Fatal => return e,
+            },
+        };
+        let face = Arc::clone(&face);
+        tokio::spawn(async move {
+            let _ = handle(face, stream).await;
+        });
     }
 }
 
