@@ -188,7 +188,10 @@ fn main() {
         if let Err(refusal) = ceiling.admits(posture) {
             fail(&refusal);
         }
-        ikigai_web_server::serve::serve(kernel, listener, ceiling).await
+        // Returns only when the listener is dead; accept failures short of that are skipped
+        // or backed off inside the loop (ledger #753).
+        let error = ikigai_web_server::serve::serve_until_error(kernel, listener, ceiling).await;
+        fail(&format!("the listener on {addr} is dead: {error}"))
     })
 }
 

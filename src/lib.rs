@@ -138,6 +138,7 @@
 //! already differ per face. `HEAD` is exempt: it maps to `Exists`, an existence
 //! probe with no representation to validate.
 
+mod accept;
 pub mod ceiling;
 pub mod config;
 pub mod mounts;

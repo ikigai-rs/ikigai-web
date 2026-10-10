@@ -67,6 +67,11 @@ ikigai-vocab = "0.1.68"
 # endpoints round-trip the wire SYNCHRONOUSLY (ikigai-resolve), each in-flight
 # request parks a worker thread.
 tokio = { version = "1", features = ["net", "io-util", "rt-multi-thread", "macros", "time"] }
+# The errno table the accept loop classifies by (`src/accept.rs`, ledger #753): which accept
+# errors skip one connection, which back off, and which mean the listener is dead. The same
+# `0.2` the copy it came from (ikigai-cli's `ikigai-web`) pins; the floor was not bisected.
+# (The tests use it too: setrlimit, getrusage and dup2 in `tests/accept_exhaustion.rs`.)
+libc = "0.2"
 
 [dev-dependencies]
 # The module recipe as a walk. This crate binds NO endpoints of its own — the
@@ -84,9 +89,6 @@ tempfile = "3"
 # 0.1.30 (both are `^0.1`, so cargo unifies them), so the v7 peer is a hello
 # shim in front of a real v8 server. Already in the graph via ikigai-ipc.
 ikigai-wire = "0.1.30"
-# setrlimit/getrusage/dup2 for `tests/accept_exhaustion.rs`, which lowers a child's descriptor
-# limit, fills it, and measures what the accept loop burns at EMFILE (ledger #753).
-libc = "0.2"
 
 [[bin]]
 name = "ikigai-web"
