@@ -29,9 +29,10 @@
 //!   and in the binary (exit 1 before binding, naming `web.cap`).
 //! - **Unset on loopback is root**, unchanged: the control that proves the fixture can leak.
 
+mod ready;
+
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::path::Path;
 use std::sync::Arc;
 
 use ikigai_core::{
@@ -169,16 +170,6 @@ fn peer_kernel() -> Kernel {
     )
 }
 
-fn wait_for_socket(socket: &Path) {
-    for _ in 0..600 {
-        if socket.exists() {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    panic!("the IPC peer never bound {}", socket.display());
-}
-
 // ---------------------------------------------------------------------------
 // The face: composed the way production composes it, over the peer's socket.
 // ---------------------------------------------------------------------------
@@ -198,7 +189,7 @@ fn composed() -> (tempfile::TempDir, Kernel) {
     std::thread::spawn(move || {
         let _ = ikigai_ipc::serve(served, &path);
     });
-    wait_for_socket(&socket);
+    ready::socket(&socket);
     let lines = [
         "prefer urn:iki:ledger:",
         "prefer urn:repo:",
