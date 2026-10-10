@@ -25,8 +25,9 @@
 use std::fs::File;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::process::Command;
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -118,9 +119,11 @@ fn fill_descriptors() -> Vec<File> {
 }
 
 /// A server over an empty kernel on a loopback port, on its own thread and runtime.
-/// Returns where it listens and the listener's descriptor.
-fn spawn_server() -> (SocketAddr, i32) {
-    let (tx, rx) = std::sync::mpsc::channel();
+/// Returns where it listens, the listener's descriptor, and the channel that receives the
+/// error the server ended with, if it ever ends.
+fn spawn_server() -> (SocketAddr, i32, Receiver<std::io::Error>) {
+    let (bound_tx, bound_rx) = std::sync::mpsc::channel();
+    let (ended_tx, ended_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -131,15 +134,19 @@ fn spawn_server() -> (SocketAddr, i32) {
             let listener = ikigai_web_server::serve::bind("127.0.0.1:0".parse().unwrap())
                 .await
                 .unwrap();
-            tx.send((listener.local_addr().unwrap(), listener.as_raw_fd()))
+            bound_tx
+                .send((listener.local_addr().unwrap(), listener.as_raw_fd()))
                 .unwrap();
             let kernel = Kernel::new(Arc::new(Fallback::new(vec![
                 Arc::new(EndpointSpace::new()) as Arc<dyn Space>,
             ])));
+            // The reproduction commit drives the UNFIXED `serve`, which cannot end.
+            drop(ended_tx);
             ikigai_web_server::serve::serve(Arc::new(kernel), listener, Ceiling::unset()).await
         })
     });
-    rx.recv().expect("server bound")
+    let (addr, fd) = bound_rx.recv().expect("server bound");
+    (addr, fd, ended_rx)
 }
 
 /// How many connections wait in the backlog while the server is out of descriptors.
@@ -148,20 +155,68 @@ const QUEUED: usize = 16;
 /// Put the server at EMFILE with [`QUEUED`] connections in its backlog, each with its request
 /// already written. Returns the clients and the descriptors holding the process full.
 ///
-/// One descriptor is freed per client, and the client's socket takes it before its connection
-/// exists, so the server never finds a free slot: every accept it attempts is an `EMFILE`.
+/// The client sockets are CREATED first and CONNECTED only after the table is full: `connect`
+/// needs no new descriptor, so setup never frees a slot the server could win. (Freeing one per
+/// client was the first version, and on Linux the unfixed loop — retrying accept continuously —
+/// took the freed slot before the client's `socket()` could. That race was the spin, visible.)
 fn exhaust(addr: SocketAddr) -> (Vec<TcpStream>, Vec<File>) {
-    let mut fillers = fill_descriptors();
-    let mut clients = Vec::new();
-    for _ in 0..QUEUED {
-        fillers.pop();
-        let mut client = TcpStream::connect(addr).expect("connect with the one free descriptor");
-        // macOS may already have aborted this connection (see the module docs), so a failed
-        // write is not this test's business.
-        let _ = client.write_all(REQUEST);
-        clients.push(client);
-    }
+    let sockets: Vec<OwnedFd> = (0..QUEUED).map(|_| tcp_socket()).collect();
+    let fillers = fill_descriptors();
+    let clients = sockets
+        .into_iter()
+        .map(|socket| {
+            connect(&socket, addr);
+            let mut client = TcpStream::from(socket);
+            // macOS may already have aborted this connection (see the module docs), so a failed
+            // write is not this test's business.
+            let _ = client.write_all(REQUEST);
+            client
+        })
+        .collect();
     (clients, fillers)
+}
+
+/// An unconnected IPv4 TCP socket.
+fn tcp_socket() -> OwnedFd {
+    // SAFETY: socket(2) returns a new descriptor we take ownership of, or -1.
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+    assert!(fd >= 0, "socket: {}", std::io::Error::last_os_error());
+    // SAFETY: `fd` is a fresh descriptor nothing else owns.
+    unsafe { OwnedFd::from_raw_fd(fd) }
+}
+
+/// Blocking connect to a loopback IPv4 address: the handshake completes in the kernel and the
+/// connection waits in the listener's backlog until the server accepts it.
+fn connect(socket: &OwnedFd, addr: SocketAddr) {
+    let SocketAddr::V4(v4) = addr else {
+        panic!("loopback IPv4 expected, got {addr}")
+    };
+    // SAFETY: an all-zero sockaddr_in is valid; the fields that matter are set below.
+    let mut sin: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    ))]
+    {
+        sin.sin_len = std::mem::size_of::<libc::sockaddr_in>() as u8;
+    }
+    sin.sin_family = libc::AF_INET as libc::sa_family_t;
+    sin.sin_port = v4.port().to_be();
+    sin.sin_addr = libc::in_addr {
+        s_addr: u32::from(*v4.ip()).to_be(),
+    };
+    // SAFETY: `sin` is a complete sockaddr_in and the length says so.
+    let rc = unsafe {
+        libc::connect(
+            socket.as_raw_fd(),
+            (&sin as *const libc::sockaddr_in).cast(),
+            std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+        )
+    };
+    assert_eq!(rc, 0, "connect: {}", std::io::Error::last_os_error());
 }
 
 const REQUEST: &[u8] = b"GET / HTTP/1.1\r\nHost: test\r\n\r\n";
@@ -215,7 +270,7 @@ fn child_exhaust_then_recover() {
         return;
     }
     lower_fd_limit();
-    let (addr, _fd) = spawn_server();
+    let (addr, _fd, _ended) = spawn_server();
     let (mut clients, fillers) = exhaust(addr);
 
     std::thread::sleep(Duration::from_millis(300));
