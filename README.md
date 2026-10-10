@@ -314,12 +314,12 @@ two kernels built from the *same* endpoints: in-process, and through
 - **Golden threads do not cross.** A representation that is cacheable *and*
   threaded in-process arrives without the peer's threads: thread sets are
   `#[serde(skip)]` and kernel-local. This is exactly why the ETag here is
-  content-derived rather than thread-derived. ⚠ Since core 0.1.73 the suite no
-  longer SAYS so: the local kernel hangs every cacheable answer from its own
-  target name, so the set is never empty and the CACHEABLE check passes. That
-  local thread is cut by a write made through this kernel, never by anything
-  the peer does, so the hole is narrower but still open; the test pins it by
-  hand because the walk cannot.
+  content-derived rather than thread-derived. The suite says so: over the
+  mount, `demo-roster` carries only the thread the LOCAL kernel hangs on its
+  own name, and conformance 0.5's purity rule ("no thread but its own name")
+  reports it as the one finding the mount adds. That local thread is cut by a
+  write made through this kernel, never by anything the peer does; the test
+  pins the finding and the mechanism beside it.
 - **A peer with no Meta renderer has no contract.** `describe` over a mount is a
   `Verb::Meta` round-trip, and it is best-effort: a peer that cannot render one
   answers, and every mounted endpoint collapses to one anonymous, action-less

@@ -16,9 +16,8 @@
 //! - `mounts::compose(["override urn:demo:=<socket>"])` over a real
 //!   [`ikigai_ipc::serve`] peer serving that same kernel.
 //!
-//! The delta between the two reports is what the mount costs. It is not zero, but since
-//! core 0.1.73 the reports cannot show it: [`the_mount_costs_exactly_the_golden_threads`]
-//! pins the one thing it is by hand.
+//! The delta between the two reports is what the mount costs, and it is exactly one finding:
+//! [`the_mount_costs_exactly_the_golden_threads`] pins it, and the mechanism beside it by hand.
 //!
 //! ## The fixture module
 //!
@@ -400,26 +399,28 @@ fn the_fixture_module_conforms_in_process() {
     );
 }
 
-/// ★ **The mount costs exactly the golden threads — and since core 0.1.73 the suite can no
-/// longer see it.** The same endpoints, the same suite, through `compose` over a live IPC
-/// peer. `demo-roster`'s in-process representation is cacheable and hangs from
-/// [`ROSTER_THREAD`]; over the wire that thread is gone, because `Representation::threads`
-/// is `#[serde(skip)]` and does not cross. That is the standing hole this crate's ETag design
-/// was built around (see the crate docs: the validator is content-derived precisely because
-/// "thread sets are `#[serde(skip)]` and kernel-local, so they do not cross a wire mount").
+/// ★ **The mount costs exactly the golden threads, and the suite names it.** The same
+/// endpoints, the same suite, through `compose` over a live IPC peer. `demo-roster`'s
+/// in-process representation is cacheable and hangs from [`ROSTER_THREAD`]; over the wire
+/// that thread is gone, because `Representation::threads` is `#[serde(skip)]` and does not
+/// cross. That is the standing hole this crate's ETag design was built around (see the crate
+/// docs: the validator is content-derived precisely because "thread sets are `#[serde(skip)]`
+/// and kernel-local, so they do not cross a wire mount").
 ///
-/// Up to core 0.1.72 the suite named it — "cacheable with an empty golden-thread set" — and
-/// this test pinned that red line. Core 0.1.73 (hole A, ledger #512) made the kernel hang
-/// every cacheable Source/Exists answer from its own canonical target, so the mounted
-/// representation now arrives with ONE thread, `urn:demo:roster`, the local name. The set is
-/// no longer empty, so the suite's CACHEABLE check passes, and the report over the mount is
-/// as clean as the one in-process.
+/// The walk's view of it has moved three times. Up to core 0.1.72 the suite named it
+/// ("cacheable with an empty golden-thread set"). Core 0.1.73 (hole A, ledger #512) made the
+/// kernel hang every cacheable Source/Exists answer from its own canonical target, so the
+/// mounted representation arrives with ONE thread, `urn:demo:roster`, the local name; the set
+/// was no longer empty and conformance up to 0.4 reported the mount clean. Conformance 0.5
+/// (ledger #549) respelled the purity rule as "no thread but its own name", which is exactly
+/// what crosses, so the suite names it again: ONE `CACHEABLE` finding on `demo-roster`, over
+/// the mount only. The in-process control stays clean, so the finding is the mount's.
 ///
-/// **The hole is narrower, not closed.** The local target thread is cut by a Sink or Delete
-/// made THROUGH this kernel on that name. It is not cut by anything the peer does: a cut of
-/// `ROSTER_THREAD` on the peer, or a write that reaches the peer by another route, leaves
-/// this kernel serving the old roster until something local cuts it. So the pins below are
-/// the mechanism, by hand, because the walk can no longer carry the statement.
+/// **That finding is the point of this test, so it is pinned, not waived.** The local target
+/// thread is cut by a Sink or Delete made THROUGH this kernel on that name. It is not cut by
+/// anything the peer does: a cut of `ROSTER_THREAD` on the peer, or a write that reaches the
+/// peer by another route, leaves this kernel serving the old roster until something local
+/// cuts it. The pins after the report are the same statement as a mechanism.
 #[test]
 fn the_mount_costs_exactly_the_golden_threads() {
     let ledger: Ledger = Arc::default();
@@ -429,9 +430,10 @@ fn the_mount_costs_exactly_the_golden_threads() {
     eprintln!("--- over an IPC mount ---\n{over_the_wire}");
 
     assert!(in_process.is_clean(), "control:\n{in_process}");
-    assert!(
-        over_the_wire.is_clean(),
-        "the kernel's target thread masks the erasure from the walk:\n{over_the_wire}"
+    assert_eq!(
+        finding_keys(&over_the_wire),
+        BTreeSet::from(["demo-roster Cacheable".to_string()]),
+        "the mount costs the peer's thread and nothing else, and the walk says so:\n{over_the_wire}"
     );
     // The same walk, same counts: composition hides no endpoint and skips no check.
     assert_eq!(over_the_wire.endpoints, in_process.endpoints);
@@ -694,14 +696,17 @@ fn dropping_a_required_input_is_a_typed_refusal_through_the_mount() {
 /// 1. The conformance suite skips core's own operations unless `include_kernel_ops()` asks,
 ///    and it recognizes them by their name. Under an alias it does not recognize them, so a
 ///    walk of a module reached through an alias mount reports CORE's findings as the
-///    module's: eleven of them here, on three operations, and every one is real (core's
-///    `kernel-actions`, `kernel-cut` and `kernel-validate` declare inputs with no `class`,
-///    and `kernel-validate` does not resolve with the minimal inputs its ArgSpecs allow).
-///    Core 0.1.74 hung `kernel-catalog` and `kernel-actions` from the bindings thread, which
-///    retired their two CACHEABLE findings. A module author
-///    who mounted a peer this way would be handed another crate's homework with no marker
-///    saying so. Reported for the conformance PENDING; the ids are pinned below so the day
-///    core types those ArgSpecs, this test says so.
+///    module's: twenty-six of them here (core 0.1.91), on ten operations, in two kinds.
+///    Most are core's own homework and real in any kernel: `ARGSPECS` (inputs declared with
+///    no `class`) and `SKOLEM-RDF`/`CACHEABLE` probes that do not resolve with the minimal
+///    inputs the ArgSpecs allow (`kernel-cached`, `kernel-explain`, `kernel-validate`). The
+///    other kind is the MOUNT's cost again, on core's operations instead of the module's:
+///    `kernel-catalog`, `kernel-actions` and `kernel-topology` hang from a thread in-process
+///    (core 0.1.74's bindings thread), that thread does not cross the wire, and conformance
+///    0.5's "no thread but its own name" names what is left. A module author who mounted a
+///    peer this way would be handed another crate's homework with no marker saying so.
+///    Reported for the conformance PENDING; the keys are pinned below so the day core
+///    changes any of them, this test says so.
 /// 2. Every `urn:kernel:` FILTER anywhere is name-based, so this is not one crate's problem.
 ///    `serve::index` filters nothing and simply lists what it is given; a *hypothetical*
 ///    write route matching on `urn:kernel:` would not match `urn:edge:kernel:cut` either.
@@ -709,8 +714,8 @@ fn dropping_a_required_input_is_a_typed_refusal_through_the_mount() {
 ///    two annotation roots, not a deny-list — which is the argument for allow-lists.
 ///
 /// What the alias does NOT cost: the module's own findings are identical to the override
-/// mount's (none — see [`the_mount_costs_exactly_the_golden_threads`] for why the thread
-/// erasure no longer shows in a walk), and the local names resolve.
+/// mount's (the one thread erasure [`the_mount_costs_exactly_the_golden_threads`] pins), and
+/// the local names resolve.
 #[test]
 fn an_alias_mount_re_prefixes_the_peers_kernel_operations_too() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -765,16 +770,27 @@ fn an_alias_mount_re_prefixes_the_peers_kernel_operations_too() {
     let (mine, core_s): (BTreeSet<String>, BTreeSet<String>) = finding_keys(&report)
         .into_iter()
         .partition(|key| key.starts_with("demo-"));
+    let override_mount = suite().run_blocking(&mounted("override").kernel);
     assert_eq!(
         mine,
-        BTreeSet::new(),
+        finding_keys(&override_mount),
         "the module's own findings are the override mount's, unchanged:\n{report}"
     );
     assert_eq!(
         core_s,
         BTreeSet::from([
             "kernel-actions ArgSpecs".to_string(),
+            "kernel-actions Cacheable".to_string(),
+            "kernel-cache ArgSpecs".to_string(),
+            "kernel-cached ArgSpecs".to_string(),
+            "kernel-cached Cacheable".to_string(),
+            "kernel-catalog Cacheable".to_string(),
             "kernel-cut ArgSpecs".to_string(),
+            "kernel-dependents ArgSpecs".to_string(),
+            "kernel-explain ArgSpecs".to_string(),
+            "kernel-explain SkolemRdf".to_string(),
+            "kernel-threads ArgSpecs".to_string(),
+            "kernel-topology Cacheable".to_string(),
             "kernel-validate ArgSpecs".to_string(),
             "kernel-validate SkolemRdf".to_string(),
         ]),
