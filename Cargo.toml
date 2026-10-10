@@ -78,7 +78,15 @@ libc = "0.2"
 # served kernel is exactly its mounts — so the suite runs here over a real
 # composition (`tests/conformance.rs`): the same endpoints in-process and
 # through an IPC mount, and the delta is what the mount costs.
-ikigai-conformance = "0.2.0"
+#
+# 0.6.0, from 0.2.0 (2026-10-10): a `^0.2.0` pin is `<0.3.0`, so this crate was ceilinged
+# out of AUTHORITY (0.3), request-memoized firing (0.4), own-name purity (0.5) and
+# SPACE-NAME (0.6) while still reporting green. 0.6.0 pulls ikigai-core to 0.1.89+ and
+# ikigai-vocab to 0.1.89+ in every test build; `[dependencies]` above deliberately keeps
+# the LIBRARY's own floors (core 0.1.80, vocab 0.1.68), which are what the server's code
+# needs. SPACE-NAME has nothing to check here: this crate exports no space constructor
+# (`mounts::compose` returns a Kernel built from mount lines), so the suite declares none.
+ikigai-conformance = "0.6.0"
 # `run_blocking` is the suite's own executor; the by-hand pins need one too.
 # (The peer half of the mount — a real Unix-socket kernel server — is
 # `ikigai-ipc::serve`, already a normal dependency for its client half.)
