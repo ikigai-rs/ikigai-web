@@ -26,7 +26,10 @@
 //!   errno nobody anticipated.
 //! - **Fatal** ([`Fault::Fatal`]): the listener itself is unusable (`EBADF`, `ENOTSOCK`,
 //!   `EINVAL` — not listening, `EFAULT`). Retrying would back off forever against a dead
-//!   socket and hide that the door is gone, so these alone end the loop.
+//!   socket and hide that the door is gone, so these alone end the loop. ⚠ On Linux a dead
+//!   listener can still read as exhaustion while the table is full: `accept4` reserves the new
+//!   descriptor before it looks at the listener, so it answers `EMFILE`, and the death shows
+//!   only on the first retry after a descriptor frees (`tests/accept_exhaustion.rs`).
 //!
 //! The library's module docs carry the comparison with axum's `serve` this table was matched
 //! against; it is not repeated here.

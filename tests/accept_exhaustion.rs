@@ -325,11 +325,19 @@ fn child_listener_dies_while_backing_off() {
     // seconds. Without that, the loop would wait for an event the closed socket cannot send.
     // SAFETY: dup2 onto a descriptor this process owns; the listener closes it on drop.
     assert_eq!(unsafe { libc::dup2(fillers[0].as_raw_fd(), fd) }, fd);
-    let ended_with = match ended.recv_timeout(Duration::from_secs(5)) {
-        Ok(error) => error
+    // ⚠ While the table is still full, Linux may not say ENOTSOCK at all: its `accept4`
+    // reserves the new descriptor BEFORE it looks at the listener, so a dead listener at EMFILE
+    // answers EMFILE, and the loop rightly keeps backing off (measured on ubuntu CI: still
+    // running 5s later). macOS checks the descriptor first. So report what happened while full,
+    // then free the table: from there every kernel must say ENOTSOCK on the next retry.
+    let early = ended.recv_timeout(Duration::from_millis(1500)).ok();
+    println!("RESULT ended_while_full={}", early.is_some());
+    drop(fillers);
+    let ended_with = match early.or_else(|| ended.recv_timeout(Duration::from_secs(5)).ok()) {
+        Some(error) => error
             .raw_os_error()
             .map_or_else(|| format!("{error:?}"), |code| code.to_string()),
-        Err(_) => "still-running".to_string(),
+        None => "still-running".to_string(),
     };
     println!("RESULT ended_with={ended_with}");
 }
