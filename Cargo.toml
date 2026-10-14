@@ -86,7 +86,12 @@ libc = "0.2"
 # the LIBRARY's own floors (core 0.1.80, vocab 0.1.68), which are what the server's code
 # needs. SPACE-NAME has nothing to check here: this crate exports no space constructor
 # (`mounts::compose` returns a Kernel built from mount lines), so the suite declares none.
-ikigai-conformance = "0.6.0"
+#
+# 0.8.0, from 0.6.0 (2026-10-14): `^0.6.0` is `<0.7.0`, ceilinged out of VALIDATE (0.7) and
+# REQUIRED, `Suite::own`, `Checks::STATIC` (0.8). No new finding on the upgrade. It pulls
+# ikigai-core and ikigai-vocab to 0.1.100+ in every test build; the library floors above
+# stay where the server's code needs them. Still a CEILING: `<0.9.0`.
+ikigai-conformance = "0.8.0"
 # `run_blocking` is the suite's own executor; the by-hand pins need one too.
 # (The peer half of the mount — a real Unix-socket kernel server — is
 # `ikigai-ipc::serve`, already a normal dependency for its client half.)
