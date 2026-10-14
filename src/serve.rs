@@ -467,35 +467,31 @@ pub fn status_of(error: &Error) -> u16 {
 /// The roots of the one write route v1 exposes: annotation minting (the bare
 /// IRI) and slug-addressed annotation writes (`{root}:{id}`).
 ///
-/// ★ BOTH spellings, deliberately, for the whole `urn:iki:` transition window.
-/// `ikigai-browse` 0.3.0 moved its bindings to `urn:iki:annotation:*`; older
-/// callers — pre-0.3.0 faces, bookmarked URLs, `curl` in someone's notes —
-/// still write `urn:annotation…`, and they are exactly who the window exists
-/// to protect.
+/// ★ ONE spelling since ledger #861: the `urn:iki:` transition window is
+/// CLOSED. `ikigai-browse` 0.3.0 moved its bindings to `urn:iki:annotation:*`,
+/// and this list carried the legacy `urn:annotation` beside it for as long as a
+/// reachable caller might still emit the old spelling. The window's stated end
+/// condition was "every host on the machine has dropped its `urn:annotation:`
+/// alias rule", and it was met when the dev server retired (2026-10-07): gonk
+/// binds only `urn:iki:annotation` and aliases nothing, so a legacy POST passed
+/// this gate and then 404'd at an empty space. It is now refused HERE, with the
+/// same 405 any other non-annotation POST gets, before the kernel is asked.
 ///
-/// ★★ This list must NOT be narrowed to the new name alone, and the reason is
-/// the most confusable fact in the migration: **a route gate sits OUTSIDE the
-/// kernel**. [`post_allowed`] inspects the raw request path before any
-/// resolution, so it sees **the name the caller wrote**, never the canonical
-/// one. That is the *opposite* direction from a mount line:
+/// ★★ Why this is a list and why that list is a CALLER-NAME list: **a route
+/// gate sits OUTSIDE the kernel**. [`post_allowed`] inspects the raw request
+/// path before any resolution, so it sees **the name the caller wrote**, never
+/// the canonical one. That is the *opposite* direction from a mount line:
 /// `Kernel::with_aliases` wraps the root space, so **mounts sit INSIDE the
-/// alias** and see canonical names (a stale mount stops matching the moment
-/// the alias fires), while route gates see caller names and must accept every
-/// spelling still in flight. Get this backwards and you break one while
-/// "fixing" the other.
-///
-/// **What ends the window:** the `urn:annotation` entry goes when no reachable
-/// caller emits the old spelling any more — in practice, when every host on
-/// the machine has dropped its `urn:annotation:` alias rule. Until that is
-/// true this is not redundancy to tidy away.
-const ANNOTATION_ROOTS: [&str; 2] = ["urn:annotation", "urn:iki:annotation"];
+/// alias** and see canonical names, while route gates see caller names. A
+/// future rename of the family needs BOTH spellings here for its own window,
+/// for the same reason this one did.
+const ANNOTATION_ROOTS: [&str; 1] = ["urn:iki:annotation"];
 
 /// The one write route v1 exposes: annotation minting and slug-addressed
-/// annotation writes, under either spelling in [`ANNOTATION_ROOTS`].
+/// annotation writes, under the root in [`ANNOTATION_ROOTS`].
 ///
-/// The family test is COLON-ANCHORED for every root: `urn:annotationx` and
-/// `urn:iki:annotationx` are different resources and neither is a write route
-/// here. A `starts_with(root)` that forgot the colon would silently widen the
+/// The family test is COLON-ANCHORED for every root: `urn:iki:annotationx` is a
+/// different resource and no write route here. A `starts_with(root)` that forgot the colon would silently widen the
 /// only write surface this server has.
 fn post_allowed(uri: &str) -> bool {
     ANNOTATION_ROOTS
@@ -541,6 +537,9 @@ async fn respond(face: &Face, req: HttpRequest) -> Resp {
     }
     if let Some(command) = req.path.strip_prefix("/k/") {
         return k_command(face, &req, command.to_string()).await;
+    }
+    if let Some(uri) = req.path.strip_prefix("/meta/") {
+        return meta(face, &req, uri).await;
     }
     if let Some(start) = req.path.strip_prefix("/browse/") {
         return browse_shell(start, posture);
@@ -588,6 +587,64 @@ async fn get(face: &Face, req: &HttpRequest, target: Iri) -> Resp {
     }
 }
 
+/// `GET /meta/{uri}` → `Meta`: the endpoint's own CONTRACT (its description,
+/// what it takes, answers and requires), never its data (ledger #222). `GET`
+/// maps to `Source` and `HEAD` to `Exists`, so without this route nothing at
+/// the edge reached `Meta`, and an endpoint could not describe itself here
+/// although the kernel renders one.
+///
+/// Read-only by construction — `Meta` is not a mutating verb — so it serves
+/// on every bind, and like every route it is issued through [`Face::issue`],
+/// under the ceiling. ⚠ What that means off loopback: the kernel requires no
+/// scope for `Meta` unless an endpoint declares one for that verb, so a
+/// contract answers to whoever can reach the face even where the endpoint's
+/// DATA is refused. That is the kernel's rule for every client of every door,
+/// and the contract names the scope a read needs; `urn:kernel:catalog`, which
+/// lists every contract at once, stays behind its inspect scope.
+///
+/// Faces: query args pass through (`as=`, and core's `lossy=`); without an
+/// explicit `as=` the `Accept` header picks one. A browser's `text/html` asks
+/// for `text/plain`, the renderer's human face: no renderer emits HTML, and the
+/// canonical Turtle the kernel would fall back to downloads rather than shows.
+async fn meta(face: &Face, req: &HttpRequest, uri: &str) -> Resp {
+    if req.method != "GET" {
+        let mut resp = error_resp(405, "/meta/ is read-only: GET the contract");
+        resp.headers.push(("Allow".to_string(), "GET".to_string()));
+        return resp;
+    }
+    let target = match Iri::parse(uri.to_string()) {
+        Ok(target) if uri.starts_with("urn:") => target,
+        _ => {
+            return error_resp(
+                404,
+                &format!("`{uri}`: /meta/ describes urn:* resources (e.g. /meta/urn:repo:list)"),
+            )
+        }
+    };
+    let mut request = Request::new(Verb::Meta, target);
+    let mut explicit_as = false;
+    for (k, v) in &req.query {
+        explicit_as |= k == "as";
+        request = request.with_arg(k.clone(), ArgRef::Inline(v.clone().into_bytes()));
+    }
+    if !explicit_as {
+        let asked = req.header("accept").and_then(accept_face).map(|asked| {
+            if asked == "text/html" {
+                "text/plain"
+            } else {
+                asked
+            }
+        });
+        if let Some(asked) = asked {
+            request = request.with_arg("as", ArgRef::Inline(asked.as_bytes().to_vec()));
+        }
+    }
+    match face.issue(request).await {
+        Ok(repr) => source_resp(req, repr),
+        Err(e) => error_resp(status_of(&e), &e.to_string()),
+    }
+}
+
 /// HEAD → Exists: 200 (no body) when the resource reports `true`, else 404.
 /// This is the ROC-honest map — an existence probe, not a body-less GET.
 async fn head(face: &Face, target: Iri) -> Resp {
@@ -616,8 +673,7 @@ async fn post(face: &Face, req: &HttpRequest, target: Iri) -> Resp {
     if !post_allowed(uri) {
         let mut resp = error_resp(
             405,
-            "v1 accepts POST only for annotation minting \
-             (/urn:iki:annotation…, or the legacy /urn:annotation…)",
+            "v1 accepts POST only for annotation minting (/urn:iki:annotation…)",
         );
         resp.headers
             .push(("Allow".to_string(), "GET, HEAD".to_string()));
@@ -671,10 +727,8 @@ async fn post(face: &Face, req: &HttpRequest, target: Iri) -> Resp {
 /// `hx-post="/k/sink urn:iki:annotation"` (see `ikigai-browse`, which calls
 /// this "the HOST's /k/ adapter"). The command is REPL-ish but deliberately
 /// tiny: `source` (GET) and `sink` (POST, annotation family only — the same
-/// one write route as POST `/urn:iki:annotation…`, and, for the transition
-/// window, the legacy `urn:annotation…` spelling too; see
-/// [`ANNOTATION_ROOTS`]). Nothing else; the adapter never widens the face's
-/// verb surface.
+/// one write route as POST `/urn:iki:annotation…`; see [`ANNOTATION_ROOTS`]).
+/// Nothing else; the adapter never widens the face's verb surface.
 ///
 /// A sink's body follows the same rule as [`post`]: form-encoded fields become
 /// invocation args (the htmx overlay's shape), and any other body arrives as
@@ -710,8 +764,7 @@ async fn k_command(face: &Face, req: &HttpRequest, command: String) -> Resp {
             if !post_allowed(target.as_str()) {
                 return error_resp(
                     405,
-                    "v1 accepts sink only for the annotation family \
-                     (urn:iki:annotation…, or the legacy urn:annotation…)",
+                    "v1 accepts sink only for the annotation family (urn:iki:annotation…)",
                 );
             }
             // The command's own k=v args, then the form fields (which win).
@@ -830,7 +883,7 @@ fn browse_shell(start: &str, posture: Posture) -> Resp {
          <style>{BROWSE_CSS}{readonly_css}</style></head><body>\
          <main id=\"browse\" hx-get=\"/k/source {start} as=text/html\" \
          hx-trigger=\"load\" hx-swap=\"innerHTML\">loading {start}…</main>\
-         </body></html>\n"
+         <script>{SHELL_JS}</script></body></html>\n"
     );
     Resp {
         status: 200,
@@ -871,7 +924,52 @@ const BROWSE_CSS: &str = "\
    border-radius:6px}\
  .browse-annotate{margin:1rem 0;display:grid;gap:.4rem;max-width:32rem}\
  .browse-annotate input,.browse-annotate textarea{font:inherit;padding:.3rem}\
+ .affordance-error{margin:.4rem 0;padding:.4rem .6rem;border-radius:6px;\
+   border:1px solid light-dark(#d93025,#f28b82);color:light-dark(#a50e0e,#f28b82);\
+   white-space:pre-wrap;max-width:40rem}\
 ";
+
+/// The shell's one behavior of its own: say WHY when an affordance is refused
+/// (ledger #676). A refusal is a typed 4xx/5xx, so htmx swaps nothing and a
+/// form keeps its input, which is right, but alone it means the page does
+/// nothing visible and the person cannot tell a refusal from a dead click.
+///
+/// It mirrors gonk's `denyAt` (`ikigai-gonk/web/gonk.js`) so one face reads the
+/// same under either host: the server's refusal text goes in a
+/// `role="status"` note AFTER the element that asked (a form whose target is
+/// elsewhere keeps its fields), or IN PLACE of an element that swaps into
+/// itself, whose "loading…" placeholder would otherwise sit there forever. A
+/// 403 also marks the control disabled: an authority refusal is permanent for
+/// this ceiling, so a live button would lie; every other status can change
+/// under it and leaves the control usable. Two deliberate differences: there
+/// is no `#flash` here, so a failure outside `#browse` notes at the top of the
+/// page; and a retry REPLACES the element's previous note rather than stacking
+/// another. The text is set with `textContent`, never parsed as markup: it is
+/// the server's (or a peer's) message, not HTML.
+const SHELL_JS: &str = "\
+ (function(){\
+ function note(elt,text,status){\
+ var host=elt&&elt.closest&&elt.closest('#browse')?elt:null;\
+ var p=document.createElement('p');\
+ p.className='affordance-error';p.setAttribute('role','status');p.textContent=text;\
+ if(!host){document.body.insertBefore(p,document.body.firstChild);return}\
+ var target=host.getAttribute('hx-target');\
+ if(!target||target==='this'){host.textContent='';host.appendChild(p)}\
+ else{var next=host.nextElementSibling;\
+ if(next&&next.className==='affordance-error'){next.replaceWith(p)}\
+ else{host.insertAdjacentElement('afterend',p)}}\
+ if(status===403){host.setAttribute('aria-disabled','true');\
+ if(host.tagName==='BUTTON'){host.disabled=true}}\
+ }\
+ document.addEventListener('htmx:responseError',function(e){\
+ var xhr=e.detail.xhr;\
+ var text=((xhr&&xhr.responseText)||'The server refused that.').trim();\
+ note(e.detail.elt,text,xhr&&xhr.status);\
+ });\
+ document.addEventListener('htmx:sendError',function(e){\
+ note(e.detail.elt,'The server did not answer.',0);\
+ });\
+ })();";
 
 /// The browse-root set the CATALOG asserts: each mounted root contributes a
 /// `urn:repo:{name}:tree` row to `kernel.entries()`, so the names extracted
@@ -1150,14 +1248,13 @@ mod tests {
         // The canonical spelling (ikigai-browse 0.3.0+).
         assert!(post_allowed("urn:iki:annotation"));
         assert!(post_allowed("urn:iki:annotation:abc-123"));
-        // The legacy spelling, still accepted for the transition window — a
-        // route gate sees the CALLER's name, so narrowing to the new one alone
-        // would reject exactly the callers the window protects.
-        assert!(post_allowed("urn:annotation"));
-        assert!(post_allowed("urn:annotation:abc-123"));
-        // ★ Colon-anchored for BOTH roots. A `starts_with(root)` that dropped
-        // the colon would make these write routes, silently widening the only
-        // write surface this server has.
+        // The legacy spelling's window is CLOSED (ledger #861): nothing on the
+        // machine binds or aliases it any more, so it is no write route here.
+        assert!(!post_allowed("urn:annotation"));
+        assert!(!post_allowed("urn:annotation:abc-123"));
+        // ★ Colon-anchored. A `starts_with(root)` that dropped the colon would
+        // make these write routes, silently widening the only write surface
+        // this server has.
         assert!(!post_allowed("urn:annotationx"));
         assert!(!post_allowed("urn:iki:annotationx"));
         assert!(!post_allowed("urn:iki:annotations:abc"));

@@ -17,6 +17,10 @@
 //!   (via `Accept` or an explicit `?as=`, which wins), `text/turtle` for
 //!   CONSTRUCT/DESCRIBE — a protocol-ish endpoint other tools can point at.
 //!
+//! `graph=` (repeatable) narrows the dataset to the graphs named and is
+//! forwarded to the endpoint as one set; with none, the endpoint's default
+//! dataset answers (on gonk, the union of the graphs the ceiling may read).
+//!
 //! Execution routes by QUERY FORM: the first meaningful token after the
 //! prologue picks `urn:sparql:select` / `:ask` / `:construct` / `:describe`.
 //! The face is READ-ONLY — update forms (INSERT/DELETE/…) are rejected loudly
@@ -45,10 +49,12 @@ pub(crate) async fn respond(face: &Face, req: &HttpRequest) -> Resp {
             let Ok(body) = std::str::from_utf8(&req.body) else {
                 return error_resp(400, "form body is not UTF-8");
             };
-            for (k, v) in crate::serve::parse_query(body) {
-                args.retain(|(name, _)| name != &k);
-                args.push((k, v));
-            }
+            // Body fields replace the URL's by NAME, and every body field is kept:
+            // a repeated `graph=` in the form is a set, so removing per pair (as
+            // this did) would keep only the last of it.
+            let fields = crate::serve::parse_query(body);
+            args.retain(|(name, _)| fields.iter().all(|(field, _)| field != name));
+            args.extend(fields);
         } else if !req.body.is_empty() {
             let Ok(body) = std::str::from_utf8(&req.body) else {
                 return error_resp(400, "query body is not UTF-8");
@@ -65,11 +71,12 @@ pub(crate) async fn respond(face: &Face, req: &HttpRequest) -> Resp {
         .map(|(_, v)| v.replace("\r\n", "\n"));
     let query = query.as_deref().filter(|q| !q.trim().is_empty());
     let explicit_as = args.iter().find(|(k, _)| k == "as").map(|(_, v)| v.clone());
+    let graphs = graphs(&args);
     let accepted = req.header("accept").and_then(accept_result_type);
     // The editor page is the html face — but an explicit `as=` always wins
     // (the page's own JSON/CSV links carry one).
     if explicit_as.is_none() && accepted == Some("text/html") {
-        return editor_page(face, query).await;
+        return editor_page(face, query, &graphs).await;
     }
     let Some(query) = query else {
         return error_resp(400, "missing `query=` (or a POST body carrying the query)");
@@ -83,21 +90,42 @@ pub(crate) async fn respond(face: &Face, req: &HttpRequest) -> Resp {
             .and_then(|accept| accept_for_form(accept, form))
             .map(str::to_string)
     });
-    match execute(face, form, query, as_arg.as_deref()).await {
+    match execute(face, form, query, as_arg.as_deref(), &graphs).await {
         Ok(repr) => source_resp(req, repr),
         Err(e) => error_resp(status_of(&e), &e.to_string()),
     }
+}
+
+/// Every `graph=` the request named, in order, blank values dropped: the
+/// graphs that narrow the dataset (ledger #851). Empty = none named, so the
+/// endpoint's default dataset.
+///
+/// Repeatable, the way the SPARQL protocol's own `default-graph-uri` is, and a
+/// single value may already list several (`urn:sparql:*` separates by commas or
+/// whitespace).
+fn graphs(args: &[(String, String)]) -> Vec<String> {
+    args.iter()
+        .filter(|(k, v)| k == "graph" && !v.trim().is_empty())
+        .map(|(_, v)| v.trim().to_string())
+        .collect()
 }
 
 /// Issue the query through the kernel as `Verb::Source` on `urn:sparql:{form}`,
 /// under the face's ceiling like every other route. (It was the one route with
 /// its own hardcoded `Capability::root()`, so even a ceiling applied to the
 /// other routes would have left `/sparql` reading every graph a peer serves.)
+///
+/// `graphs` travel as ONE `graph` argument, the set joined by single spaces:
+/// the request's arguments are a map, so a repeated name keeps only its last
+/// value, and forwarding each `graph=` on its own would have narrowed to the
+/// last graph named and said nothing. Each graph named still needs its own read
+/// scope at the peer; one the ceiling does not grant is refused there.
 async fn execute(
     face: &Face,
     form: &str,
     query: &str,
     as_arg: Option<&str>,
+    graphs: &[String],
 ) -> Result<ikigai_core::Representation, ikigai_core::Error> {
     let target = Iri::parse(format!("urn:sparql:{form}"))
         .map_err(|e| ikigai_core::Error::Endpoint(format!("urn:sparql:{form}: {e}")))?;
@@ -105,6 +133,9 @@ async fn execute(
         .with_arg("query", ArgRef::Inline(query.as_bytes().to_vec()));
     if let Some(media) = as_arg {
         request = request.with_arg("as", ArgRef::Inline(media.as_bytes().to_vec()));
+    }
+    if !graphs.is_empty() {
+        request = request.with_arg("graph", ArgRef::Inline(graphs.join(" ").into_bytes()));
     }
     face.issue(request).await
 }
@@ -374,7 +405,7 @@ pub fn urlencode(s: &str) -> String {
 /// rendered as a table (SELECT), a boolean (ASK), or Turtle (CONSTRUCT/
 /// DESCRIBE). The page itself is always 200: an editor showing a query error
 /// is a successfully rendered editor.
-async fn editor_page(face: &Face, query: Option<&str>) -> Resp {
+async fn editor_page(face: &Face, query: Option<&str>, graphs: &[String]) -> Resp {
     let results = match query {
         None => String::new(),
         Some(q) => match query_form(q) {
@@ -387,7 +418,7 @@ async fn editor_page(face: &Face, query: Option<&str>) -> Resp {
                     "ask" => Some("text/csv"),
                     _ => None,
                 };
-                match execute(face, form, q, as_arg).await {
+                match execute(face, form, q, as_arg, graphs).await {
                     Err(e) => error_box(&format!("{} ({})", e, status_of(&e))),
                     Ok(repr) => {
                         let text = String::from_utf8_lossy(&repr.bytes);
@@ -420,14 +451,30 @@ async fn editor_page(face: &Face, query: Option<&str>) -> Resp {
     } else {
         html_escape(query_text)
     };
+    // The narrowing travels with the page: into the raw-result links, and as
+    // hidden fields so the next Run reads the same graphs rather than silently
+    // widening to the default dataset.
+    let graph_params: String = graphs
+        .iter()
+        .map(|g| format!("&amp;graph={}", urlencode(g)))
+        .collect();
+    let graph_fields: String = graphs
+        .iter()
+        .map(|g| {
+            format!(
+                "<input type=\"hidden\" name=\"graph\" value=\"{}\">",
+                html_escape(g)
+            )
+        })
+        .collect();
     let faces = if query_text.trim().is_empty() {
         String::new()
     } else {
         let encoded = urlencode(query_text);
         format!(
             "<span class=\"faces\">raw: \
-             <a href=\"/sparql?query={encoded}&amp;as=application/sparql-results%2Bjson\">JSON</a> \
-             <a href=\"/sparql?query={encoded}&amp;as=text/csv\">CSV</a></span>"
+             <a href=\"/sparql?query={encoded}{graph_params}&amp;as=application/sparql-results%2Bjson\">JSON</a> \
+             <a href=\"/sparql?query={encoded}{graph_params}&amp;as=text/csv\">CSV</a></span>"
         )
     };
     let body = format!(
@@ -438,7 +485,7 @@ async fn editor_page(face: &Face, query: Option<&str>) -> Resp {
          <p>Query the machine's shared RDF store \u{2014} read-only \
          (SELECT, ASK, CONSTRUCT, DESCRIBE). <a href=\"/\">catalog</a></p></header>\
          <div class=\"layout\">\
-         <main><form method=\"GET\" action=\"/sparql\">\
+         <main><form method=\"GET\" action=\"/sparql\">{graph_fields}\
          <div class=\"editor\"><pre id=\"hl\" aria-hidden=\"true\"></pre>\
          <textarea id=\"q\" name=\"query\" spellcheck=\"false\">{textarea}</textarea></div>\
          <div class=\"run\"><button type=\"submit\">Run</button>\

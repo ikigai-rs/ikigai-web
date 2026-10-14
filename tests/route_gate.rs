@@ -78,8 +78,9 @@ fn recording_annotation(witness: Witness) -> FnEndpoint {
     )
 }
 
-/// A kernel binding the annotation family under both spellings (the transition window this
-/// server's route gate exists to serve) plus one unrelated resource to POST at.
+/// A kernel binding the annotation family, the retired legacy spelling beside it (a Sink that
+/// would record if the route gate ever admitted it again, ledger #861), and one unrelated
+/// resource to POST at.
 fn witnessed_kernel(witness: Witness) -> Kernel {
     let space = EndpointSpace::new()
         .bind(
@@ -92,6 +93,10 @@ fn witnessed_kernel(witness: Witness) -> Kernel {
         )
         .bind(
             Exact::new("urn:annotation"),
+            recording_annotation(Arc::clone(&witness)),
+        )
+        .bind(
+            Exact::new("urn:annotation:abc"),
             recording_annotation(Arc::clone(&witness)),
         )
         // Deliberately NOT in the annotation family, and deliberately a Sink that would
@@ -202,8 +207,8 @@ fn wrote(server: &Server) -> Vec<String> {
     server.witness.lock().expect("witness").clone()
 }
 
-/// The witness works: a permitted write through the real route lands exactly once, under both
-/// spellings and through both entrances (`POST /{uri}` and the `/k/sink` adapter).
+/// The witness works: a permitted write through the real route lands exactly once, bare and
+/// slugged, through both entrances (`POST /{uri}` and the `/k/sink` adapter).
 ///
 /// This has to come first. A witness that cannot fire proves nothing about the refusals, and
 /// "no write was recorded" is only evidence once a write has been recorded.
@@ -212,8 +217,7 @@ fn a_permitted_write_lands_once_through_every_entrance() {
     let server = &loopback();
     let before = wrote(server).len();
     for (path, mark) in [
-        ("/urn:iki:annotation", "new-spelling"),
-        ("/urn:annotation", "legacy-spelling"),
+        ("/urn:iki:annotation", "bare"),
         ("/urn:iki:annotation:abc", "slug"),
         ("/k/sink%20urn:iki:annotation", "adapter"),
     ] {
@@ -225,8 +229,7 @@ fn a_permitted_write_lands_once_through_every_entrance() {
     assert_eq!(
         &after[before..],
         [
-            "new-spelling".to_string(),
-            "legacy-spelling".to_string(),
+            "bare".to_string(),
             "slug".to_string(),
             "adapter".to_string()
         ],
@@ -249,6 +252,9 @@ fn a_permitted_write_lands_once_through_every_entrance() {
 ///   dispatch.
 /// - `POST /k/sink urn:hello` — the adapter honors the same allow-list as the direct route,
 ///   which is the point of there being ONE list.
+/// - `POST /urn:annotation` (and its slug and adapter forms) — the legacy spelling, whose
+///   transition window closed (ledger #861). It is BOUND to a recording endpoint here, so a
+///   gate that still admitted it would show up in the witness, not as a 404.
 #[test]
 fn every_refusal_happens_in_front_of_the_kernel() {
     let server = &loopback();
@@ -261,6 +267,17 @@ fn every_refusal_happens_in_front_of_the_kernel() {
         ("POST /urn:hello", 405u16, "outside the annotation family"),
         ("POST /urn:iki:annotationx", 405, "across the colon anchor"),
         ("POST /k/sink%20urn:hello", 405, "the adapter's allow-list"),
+        (
+            "POST /urn:annotation",
+            405,
+            "the legacy spelling is no write route",
+        ),
+        ("POST /urn:annotation:abc", 405, "nor is its slug family"),
+        (
+            "POST /k/sink%20urn:annotation",
+            405,
+            "nor through the adapter",
+        ),
         (
             "DELETE /urn:iki:annotation",
             405,

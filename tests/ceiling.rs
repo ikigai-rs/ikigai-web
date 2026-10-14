@@ -374,10 +374,10 @@ fn no_route_header_or_parameter_reaches_past_the_ceiling() {
         );
     }
 
-    // `/sparql` naming the ledger graph: never the ledger graph in the answer. (Today the
-    // face does not forward `graph=` at all, so the query runs over the union, which the
-    // ceiling has already narrowed to the browse graph; if it ever starts forwarding it,
-    // the peer's per-graph refusal is what must hold, and this still pins the outcome.)
+    // `/sparql` naming the ledger graph: the face forwards `graph=` (ledger #851), so the
+    // peer's per-graph refusal is what holds — 403, naming the missing token, and never the
+    // ledger graph as an ANSWER row. (The refusal's own text names the graph's read token, so
+    // the check is on the bracketed term a result row would carry.)
     for (what, request) in [
         (
             "GET /sparql naming the ledger graph",
@@ -398,9 +398,10 @@ fn no_route_header_or_parameter_reaches_past_the_ceiling() {
             )
         }),
     ] {
-        let (_status, body) = roundtrip(face.addr, &request);
+        let (status, body) = roundtrip(face.addr, &request);
+        assert_eq!(status, 403, "{what}: {body}");
         assert!(
-            !body.contains(LEDGER_GRAPH),
+            !body.contains(&format!("<{LEDGER_GRAPH}>")),
             "{what} read the ledger graph: {body}"
         );
     }
@@ -456,6 +457,68 @@ fn no_route_header_or_parameter_reaches_past_the_ceiling() {
     for scope in BROWSE_ONLY {
         assert!(body.contains(scope), "the index names the ceiling: {body}");
     }
+}
+
+/// `graph=` reaches the mounted peer (ledger #851): it narrows the dataset to the graphs
+/// named, and a repeated `graph=` names them all. Under root the fixture's default dataset is
+/// BOTH graphs, so before the face forwarded `graph=` the first assertion failed with the
+/// ledger graph beside the browse graph.
+#[test]
+fn graph_narrows_the_dataset_at_the_peer() {
+    let face = spawn_face("127.0.0.1", Ceiling::unset());
+    let (status, body) = get(
+        face.addr,
+        &format!("/sparql?query={SELECT_G}&graph={BROWSE_GRAPH}"),
+        TSV,
+    );
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains(&format!("<{BROWSE_GRAPH}>")), "{body}");
+    assert!(
+        !body.contains(LEDGER_GRAPH),
+        "graph= did not narrow: {body}"
+    );
+    let (status, body) = get(
+        face.addr,
+        &format!("/sparql?query={SELECT_G}&graph={LEDGER_GRAPH}&graph={BROWSE_GRAPH}"),
+        TSV,
+    );
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        body.contains(&format!("<{LEDGER_GRAPH}>")) && body.contains(&format!("<{BROWSE_GRAPH}>")),
+        "a repeated graph= names every graph, not the last: {body}"
+    );
+
+    // Under the browse-only ceiling, naming the graph it grants still answers.
+    let face = lan_browse_only();
+    let (status, body) = get(
+        face.addr,
+        &format!("/sparql?query={SELECT_G}&graph={BROWSE_GRAPH}"),
+        TSV,
+    );
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains(&format!("<{BROWSE_GRAPH}>")), "{body}");
+}
+
+/// `GET /meta/{iri}` forwards `Verb::Meta` to the mounted peer under the ceiling (ledger
+/// #222). Meta needs no scope unless an endpoint declares one for it (the kernel's rule, the
+/// same for every client of every door), so under the browse-only ceiling the ledger's
+/// CONTRACT answers — naming the token a read needs — while its DATA stays refused.
+#[test]
+fn meta_crosses_the_mount_under_the_ceiling_and_discloses_the_contract_only() {
+    let face = lan_browse_only();
+    let (status, body) = get(face.addr, "/meta/urn:iki:ledger:items", "");
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("text/turtle"), "{body}");
+    assert!(
+        body.contains("urn:cap:ledger:read:default"),
+        "the contract names what a read requires: {body}"
+    );
+    assert!(
+        !body.contains(LEDGER_SECRET),
+        "Meta answered with data: {body}"
+    );
+    let (status, body) = get(face.addr, "/urn:iki:ledger:items", "");
+    assert_eq!(status, 403, "the data stays behind the ceiling: {body}");
 }
 
 /// Unset off loopback: the library refuses to serve. `serve` panics before it accepts a
