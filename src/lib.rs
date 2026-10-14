@@ -72,13 +72,15 @@
 //! - `GET {uri}` → `Source`
 //! - `HEAD {uri}` → `Exists` (200 with no body when the resource reports
 //!   `true`, 404 when `false`)
+//! - `GET /meta/{uri}` → `Meta` — the endpoint's contract, read-only, under
+//!   the ceiling like every route (`Accept`/`?as=` pick the face)
 //! - `POST /urn:iki:annotation[:{id}]` → `Sink` — the ONE write route v1
 //!   exposes, because the browse annotation overlay needs it. Form-encoded
 //!   bodies map to invocation args; any other body arrives as the piped
 //!   `content`. The pre-`urn:iki:` spelling `POST /urn:annotation[:{id}]` is
-//!   accepted too, for the whole migration window: this route gate sits
-//!   OUTSIDE the kernel and sees the CALLER's name, never the canonical one
-//!   (see `serve::ANNOTATION_ROOTS` for why, and for what ends the window).
+//!   no write route since its migration window closed (ledger #861): it is
+//!   refused with 405 like any other non-annotation POST (see
+//!   `serve::ANNOTATION_ROOTS`).
 //! - `GET`/`POST /sparql` → `Source` on `urn:sparql:{select|ask|construct|
 //!   describe}` — the content-negotiated SPARQL face (see [`sparql`]). POST
 //!   here carries a long QUERY, not a write: execution is always `Source`,

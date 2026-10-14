@@ -39,8 +39,8 @@ check.
 A non-loopback bind (`web.bind = "0.0.0.0:8642"`, or `--bind 0.0.0.0:8642`)
 serves **read-only**: one gate ahead of all dispatch refuses everything that
 is not GET/HEAD with a 403, so the write surface — the annotation Sink, in
-both its `POST /urn:iki:annotation…` and `/k/sink` spellings, and under the
-legacy `urn:annotation…` name too — is *gone*, not gated per-route. The
+both its `POST /urn:iki:annotation…` and `/k/sink` spellings — is *gone*, not
+gated per-route. The
 exception is `POST /sparql`, whose body is a query (that face is read-only by
 its own construction and rejects update forms itself). The posture derives
 from the socket actually bound, inside `serve` itself; the startup line states
@@ -139,12 +139,13 @@ the bind.
 |------|--------|
 | `GET /{uri}` | `Source` — query args pass through as invocation args (`?annotations=include`) |
 | `HEAD /{uri}` | `Exists` — 200 (no body) on `true`, 404 on `false` |
-| `POST /urn:iki:annotation[:{id}]` | `Sink` — the one write route v1 exposes (annotation minting for the browse overlay). The legacy `POST /urn:annotation[:{id}]` spelling is accepted too — see [The annotation route and the `urn:iki:` window](#the-annotation-route-and-the-urniki-window) |
+| `GET /meta/{uri}` | `Meta` — the endpoint's own contract, not its data: Turtle by default, `Accept`/`?as=` for `application/json` or `text/plain` (a browser's `text/html` gets `text/plain`). Read-only, so it serves off loopback too, under the ceiling; the kernel requires no scope for `Meta` unless an endpoint declares one, so a contract answers where the data is refused, and names the scope a read needs |
+| `POST /urn:iki:annotation[:{id}]` | `Sink` — the one write route v1 exposes (annotation minting for the browse overlay). The legacy `POST /urn:annotation[:{id}]` spelling is refused (405) since its window closed — see [The annotation route and the `urn:iki:` window](#the-annotation-route-and-the-urniki-window) |
 | `GET`/`POST /sparql` | `Source` on `urn:sparql:{form}` — the SPARQL face (below) |
 | `GET /` | index: browsable repos (via `urn:repo:list`) + the kernel catalog |
 | `GET /browse/{uri}` | the htmx shell page hosting the browse family's HTML faces |
 | `GET /k/source <iri> [k=v ...]` | the host adapter the faces' `hx-get` affordances target |
-| `POST /k/sink urn:iki:annotation…` | the faces' `hx-post` (form fields → args, any other body → the piped `content`; same single write route; legacy spelling accepted) |
+| `POST /k/sink urn:iki:annotation…` | the faces' `hx-post` (form fields → args, any other body → the piped `content`; same single write route) |
 | anything else | 405 + `Allow` |
 
 Open `http://127.0.0.1:8642/` in a browser and click into a repo: tree →
@@ -220,7 +221,14 @@ web.mount = "prefer urn:sparql:=~/.ikigai/gonk.sock"
 ```
 
 Every query runs under the face's [ceiling](#the-ceiling): through gonk, the
-default dataset is the union of the graphs the ceiling may read. An `Accept`
+default dataset is the union of the graphs the ceiling may read, so the sample
+queries' bare patterns match the browse graph without a `GRAPH` clause.
+**`graph=` narrows it** to the graphs named (ledger #851), repeatable
+(`?graph=A&graph=B`) or one value listing several, forwarded to
+`urn:sparql:{form}` as one set; each graph still needs its read scope under the
+ceiling, and one it does not grant is refused (403), never answered over the
+rest. The editor page keeps the narrowing in its next Run and its raw-result
+links. An `Accept`
 type the query form cannot answer in is skipped rather than forwarded (a
 CONSTRUCT listing `application/sparql-results+json` first gets Turtle, not a
 400; ledger #839).
@@ -260,17 +268,21 @@ startup error.
 ## The annotation route and the `urn:iki:` window
 
 `ikigai-browse` 0.3.0 moved the annotation family from `urn:annotation:*` to
-`urn:iki:annotation:*`. This server accepts **both** spellings on its one write
-route, for the whole transition window.
+`urn:iki:annotation:*`. This server accepted **both** spellings on its one
+write route for the transition window, and the window is now **closed**
+(ledger #861): `POST /urn:annotation[:{id}]` and `POST /k/sink urn:annotation…`
+are refused with 405 and `Allow: GET, HEAD`, as any other non-annotation POST
+is, before the kernel is asked.
 
-That is deliberate, and it moves in the **opposite direction** from a mount
-line. `post_allowed()` is an HTTP route allowlist that sits **outside the
-kernel**: it inspects the raw request path *before* any resolution, so it sees
-**the name the caller wrote**. A mount line, by contrast, sits **inside** any
-alias table (`Kernel::with_aliases` wraps the root space), so it sees the
-**canonical** name — a stale `urn:annotation` mount stops matching the instant
-an alias fires, and the alias cannot save it. Route gates widen; mount lines
-get rewritten. Getting this backwards breaks one while "fixing" the other.
+Why both spellings were needed while the window was open, and why it moves in
+the **opposite direction** from a mount line: `post_allowed()` is an HTTP route
+allowlist that sits **outside the kernel**. It inspects the raw request path
+*before* any resolution, so it sees **the name the caller wrote**. A mount line,
+by contrast, sits **inside** any alias table (`Kernel::with_aliases` wraps the
+root space), so it sees the **canonical** name — a stale `urn:annotation` mount
+stops matching the instant an alias fires, and the alias cannot save it. Route
+gates widen; mount lines get rewritten. A future rename of the family needs
+both spellings in the gate for its own window, for the same reason.
 
 ⚠ **This process installs no alias table, and should not.** It composes
 *nothing* locally — the kernel is exactly its mounts — so there are no local
@@ -278,21 +290,13 @@ bindings for a table to protect; it could only relocate names away from the
 very mount prefixes that route them. The rename lives at the peer that holds
 the bindings. That was the dev server, which installed its own table; it was
 retired on 2026-10-07, and gonk binds only `urn:iki:annotation` and aliases
-nothing from the old name. What that means operationally:
-
-- a **new-spelling** request needs its own `mount` line, as above. Without one
-  nothing routes `urn:iki:annotation…` to a peer and it 404s at the empty local
-  space — the route gate accepting the name is necessary but not sufficient;
-- an **old-spelling** request used to forward verbatim over IPC under a
-  `urn:annotation` mount line and be aliased at the dev server. With that peer
-  retired and that line gone, it passes the route gate and then 404s here, at
-  the empty local space.
-
-The old entry comes out of the gate when no reachable caller emits the old
-spelling any more — in practice, once no host aliases or mounts the
-`urn:annotation` name. On a machine configured as above that is already true;
-taking the entry out is a change to the gate, not to these docs, and has not
-been made.
+nothing from the old name. That met the window's end condition (no reachable
+host aliases or mounts `urn:annotation`): an old-spelling POST passed the gate
+and then 404'd at the empty local space, so the gate now refuses it up front
+instead. A new-spelling request still needs its own `mount` line, as above:
+without one nothing routes `urn:iki:annotation…` to a peer and it 404s at the
+empty local space — the route gate accepting the name is necessary but not
+sufficient.
 
 ## Conformance — what a walk of the served kernel says
 

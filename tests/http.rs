@@ -93,9 +93,15 @@ fn sparql_stub(form: &'static str) -> FnEndpoint {
                 ReprType::new("text/tab-separated-values"),
                 "?s\t?note\n<urn:x:1>\t\"hi\\nthere\"@en\n",
             )),
+            // `graph` echoes back so a test can see what the face forwarded:
+            // `<absent>` when nothing narrowed the dataset.
             _ => Ok(Representation::new(
                 ReprType::new("application/sparql-results+json"),
-                format!("{{\"form\":\"{form}\",\"query\":\"{}\"}}", query.len()),
+                format!(
+                    "{{\"form\":\"{form}\",\"query\":\"{}\",\"graph\":\"{}\"}}",
+                    query.len(),
+                    inv.inline_str("graph").unwrap_or("<absent>")
+                ),
             )),
         }
     })
@@ -134,13 +140,11 @@ fn test_kernel() -> Kernel {
         // (`serve::ANNOTATION_ROOTS`), so a test of that route has to name the
         // real family or it tests nothing.
         //
-        // Both spellings, for two reasons. It proves the transition window
-        // end-to-end — an old-spelling caller and a new-spelling caller both
-        // reach `Sink` through the real route — and it makes these bindings
-        // alias-PROOF: should anything ever wrap this kernel in a
-        // `Kernel::with_aliases` table, `urn:annotation…` rewrites to
-        // `urn:iki:annotation…`, which is bound here, instead of to a name
-        // nothing binds. Binding only the legacy pair was the latent break.
+        // The legacy `urn:annotation…` pair stays BOUND although it is no
+        // longer a write route (ledger #861): with a Sink that would succeed
+        // behind it, a refusal of the old spelling can only come from the
+        // route gate, never from a missing binding, so the gate test cannot
+        // pass for the wrong reason.
         .bind(Exact::new("urn:iki:annotation"), annotation())
         .bind(Exact::new("urn:iki:annotation:abc"), annotation())
         .bind(Exact::new("urn:annotation"), annotation())
@@ -161,9 +165,12 @@ fn test_kernel() -> Kernel {
         // through the one POST route (an annotation slug already taken).
         .bind(Exact::new("urn:taken"), erroring("conflict"))
         .bind(Exact::new("urn:iki:annotation:taken"), erroring("conflict"));
-    Kernel::new(Arc::new(Fallback::new(vec![
-        Arc::new(space) as Arc<dyn Space>
-    ])))
+    // The Meta renderer production injects (`mounts::compose`), so `/meta/{iri}`
+    // answers here as it does on a real machine; without one every Meta is a 500.
+    Kernel::with_meta_renderer(
+        Arc::new(Fallback::new(vec![Arc::new(space) as Arc<dyn Space>])),
+        Arc::new(ikigai_vocab::TurtleRenderer),
+    )
 }
 
 /// Spawn a server on an OS-assigned port at `bind_ip`; return where it landed.
@@ -465,7 +472,7 @@ fn a_conflict_answers_409_with_its_message() {
 fn post_form_body_maps_to_sink_args() {
     let form = "target=urn%3Arepo%3Ax%3Afile%3Aa.rs&body=nice+line&exact=let%20x";
     let (status, _, body) = roundtrip(&format!(
-        "POST /urn:annotation HTTP/1.1\r\nHost: t\r\n\
+        "POST /urn:iki:annotation HTTP/1.1\r\nHost: t\r\n\
          Content-Type: application/x-www-form-urlencoded\r\n\
          Content-Length: {}\r\n\r\n{form}",
         form.len()
@@ -484,7 +491,7 @@ fn post_form_body_maps_to_sink_args() {
 fn post_raw_body_arrives_as_piped_content() {
     let note = "a raw note";
     let (status, _, body) = roundtrip(&format!(
-        "POST /urn:annotation:abc?target=urn:repo:x:file:a.rs HTTP/1.1\r\nHost: t\r\n\
+        "POST /urn:iki:annotation:abc?target=urn:repo:x:file:a.rs HTTP/1.1\r\nHost: t\r\n\
          Content-Type: text/plain\r\nContent-Length: {}\r\n\r\n{note}",
         note.len()
     ));
@@ -497,24 +504,14 @@ fn post_raw_body_arrives_as_piped_content() {
     );
 }
 
-/// ★ The transition window, proven at the route rather than asserted: BOTH
-/// spellings of the annotation family reach `Sink` through both write routes.
-///
-/// This gate sits OUTSIDE the kernel — it reads the raw request path before
-/// any resolution, so it sees the name the CALLER wrote. `ikigai-browse`
-/// 0.3.0 binds `urn:iki:annotation:*`; pre-0.3.0 faces, bookmarks and hand-
-/// written `curl` lines still emit `urn:annotation…`. Both must work until the
-/// old spelling has no reachable callers left.
+/// Both write routes reach `Sink` for the annotation family, bare and slugged.
 #[test]
-fn both_annotation_spellings_reach_the_sink() {
+fn the_annotation_family_reaches_the_sink_through_both_routes() {
     let form = "target=urn%3Arepo%3Ax%3Afile%3Aa.rs&body=note&exact=let";
     for path in [
         "/urn:iki:annotation",
         "/urn:iki:annotation:abc",
-        "/urn:annotation",
-        "/urn:annotation:abc",
         "/k/sink%20urn:iki:annotation",
-        "/k/sink%20urn:annotation",
     ] {
         let (status, _, body) = roundtrip(&format!(
             "POST {path} HTTP/1.1\r\nHost: t\r\n\
@@ -525,6 +522,40 @@ fn both_annotation_spellings_reach_the_sink() {
         assert_eq!(status, 200, "for {path}");
         let body = String::from_utf8(body).unwrap();
         assert!(body.contains("body=note"), "for {path}, body was: {body}");
+    }
+}
+
+/// ★ The `urn:iki:` transition window is CLOSED (ledger #861): the legacy
+/// `urn:annotation…` spelling is no longer a write route, and is refused at the
+/// route gate as any other non-annotation POST is — 405 with `Allow`, before
+/// the kernel is asked.
+///
+/// Why it closed: since the dev server's retirement nothing on the machine
+/// binds or aliases `urn:annotation` (gonk binds only `urn:iki:annotation`), so
+/// a legacy POST used to pass the gate and 404 at an empty space. This fixture
+/// still BINDS the legacy names, deliberately: a refusal here therefore comes
+/// from the gate, not from a missing binding (before the fix every one of these
+/// answered 200).
+#[test]
+fn the_legacy_annotation_spelling_is_refused_at_the_route() {
+    let form = "target=urn%3Arepo%3Ax%3Afile%3Aa.rs&body=note&exact=let";
+    for path in [
+        "/urn:annotation",
+        "/urn:annotation:abc",
+        "/k/sink%20urn:annotation",
+    ] {
+        let (status, headers, body) = roundtrip(&format!(
+            "POST {path} HTTP/1.1\r\nHost: t\r\n\
+             Content-Type: application/x-www-form-urlencoded\r\n\
+             Content-Length: {}\r\n\r\n{form}",
+            form.len()
+        ));
+        assert_eq!(status, 405, "for {path}");
+        let body = String::from_utf8(body).unwrap();
+        assert!(!body.contains("body=note"), "for {path}, body was: {body}");
+        if !path.starts_with("/k/") {
+            assert_eq!(header(&headers, "allow"), Some("GET, HEAD"), "for {path}");
+        }
     }
 }
 
@@ -601,7 +632,7 @@ fn non_urn_paths_are_not_resolvable() {
 /// endpoint (the annotation echo errors on non-Sink verbs → 500, not 200).
 #[test]
 fn get_never_sinks() {
-    let (status, _, _) = get("/urn:annotation");
+    let (status, _, _) = get("/urn:iki:annotation");
     assert_eq!(status, 500);
 }
 
@@ -618,12 +649,12 @@ fn k_adapter_sources_with_args() {
     assert!(String::from_utf8(body).unwrap().contains("HELLO"));
 }
 
-/// `hx-post="/k/sink urn:annotation"` with form fields — the annotate form.
+/// `hx-post="/k/sink urn:iki:annotation"` with form fields — the annotate form.
 #[test]
 fn k_adapter_sinks_annotation_forms() {
     let form = "target=urn%3Arepo%3Ax%3Afile%3Aa.rs&body=note&exact=let";
     let (status, _, body) = roundtrip(&format!(
-        "POST /k/sink%20urn:annotation HTTP/1.1\r\nHost: t\r\n\
+        "POST /k/sink%20urn:iki:annotation HTTP/1.1\r\nHost: t\r\n\
          Content-Type: application/x-www-form-urlencoded\r\n\
          Content-Length: {}\r\n\r\n{form}",
         form.len()
@@ -640,7 +671,7 @@ fn k_adapter_keeps_the_write_surface() {
     let (status, _, _) =
         roundtrip("POST /k/sink%20urn:hello HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n\r\n");
     assert_eq!(status, 405);
-    let (status, _, _) = get("/k/sink%20urn:annotation");
+    let (status, _, _) = get("/k/sink%20urn:iki:annotation");
     assert_eq!(status, 405);
     let (status, _, _) = get("/k/delete%20urn:hello");
     assert_eq!(status, 405);
@@ -670,6 +701,103 @@ fn browse_shell_hosts_the_faces() {
     );
 }
 
+/// The shell shows a refusal where it happened (ledger #676). A refused write
+/// stays a typed 4xx, so htmx swaps nothing and the form keeps its input; this
+/// handler is what tells the person why. Without it the page did nothing at
+/// all on a refusal.
+#[test]
+fn browse_shell_shows_refusals_where_they_happen() {
+    let (_, _, body) = get("/browse/urn:repo:demo:tree");
+    let body = String::from_utf8(body).unwrap();
+    assert!(body.contains("htmx:responseError"), "shell was: {body}");
+    assert!(body.contains("htmx:sendError"), "shell was: {body}");
+    // The note's class is styled, and it is announced to assistive technology.
+    assert!(body.contains(".affordance-error{"), "shell was: {body}");
+    assert!(
+        body.contains("setAttribute('role','status')"),
+        "shell was: {body}"
+    );
+    // The refusal text is written as TEXT, never parsed as markup.
+    assert!(body.contains(".textContent="), "shell was: {body}");
+    assert!(!body.contains(".innerHTML="), "shell was: {body}");
+}
+
+// ---------------------------------------------------------------------------
+// The /meta/ route: Verb::Meta at the edge (ledger #222).
+// ---------------------------------------------------------------------------
+
+/// `GET /meta/{iri}` asks the endpoint for its own contract — `Verb::Meta`, not
+/// `Source`: the answer is the description, in canonical Turtle by default.
+#[test]
+fn meta_route_answers_the_contract_not_the_data() {
+    let (status, headers, body) = get("/meta/urn:hello");
+    assert_eq!(status, 200);
+    assert_eq!(
+        header(&headers, "content-type"),
+        Some("text/turtle; charset=utf-8")
+    );
+    let body = String::from_utf8(body).unwrap();
+    assert!(body.contains("hello"), "meta was: {body}");
+    assert_ne!(body, "hello", "a Source answer, not the contract");
+    // A description is cacheable, so it revalidates like any cacheable answer.
+    assert_eq!(header(&headers, "cache-control"), Some("public, no-cache"));
+    assert!(header(&headers, "etag").is_some());
+}
+
+/// The faces negotiate: `Accept: application/json` is the JSON contract an
+/// engine routes by; a browser's `text/html` gets the renderer's text face
+/// (no renderer emits HTML, and canonical Turtle would download); an explicit
+/// `?as=` wins over `Accept`.
+#[test]
+fn meta_route_negotiates_its_faces() {
+    let (status, headers, body) =
+        roundtrip("GET /meta/urn:hello HTTP/1.1\r\nHost: t\r\nAccept: application/json\r\n\r\n");
+    assert_eq!(status, 200);
+    assert_eq!(header(&headers, "content-type"), Some("application/json"));
+    let body = String::from_utf8(body).unwrap();
+    assert!(body.trim_start().starts_with('{'), "meta was: {body}");
+    assert!(body.contains("\"hello\""), "meta was: {body}");
+
+    let (status, headers, _) = roundtrip(
+        "GET /meta/urn:hello HTTP/1.1\r\nHost: t\r\n\
+         Accept: text/html,application/xhtml+xml,*/*;q=0.8\r\n\r\n",
+    );
+    assert_eq!(status, 200);
+    // The renderer's own spelling: a type that already carries its charset is
+    // projected as the renderer wrote it (`serve::content_type`).
+    assert_eq!(
+        header(&headers, "content-type"),
+        Some("text/plain;charset=utf-8")
+    );
+
+    let (_, headers, _) = roundtrip(
+        "GET /meta/urn:hello?as=text/turtle HTTP/1.1\r\nHost: t\r\nAccept: text/html\r\n\r\n",
+    );
+    assert_eq!(
+        header(&headers, "content-type"),
+        Some("text/turtle; charset=utf-8")
+    );
+}
+
+/// Nothing bound answers 404, a non-IRI 404s like the direct route, and the
+/// route is read-only: GET only, on every bind.
+#[test]
+fn meta_route_is_read_only_and_types_its_errors() {
+    assert_eq!(get("/meta/urn:nonesuch").0, 404);
+    assert_eq!(get("/meta/not-an-iri").0, 404);
+    let (status, headers, _) =
+        roundtrip("POST /meta/urn:iki:annotation HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n\r\n");
+    assert_eq!(status, 405);
+    assert_eq!(header(&headers, "allow"), Some("GET"));
+    // Off loopback the read surface includes it.
+    let (status, _, body) = roundtrip_at(
+        readonly_addr(),
+        "GET /meta/urn:hello HTTP/1.1\r\nHost: t\r\n\r\n",
+    );
+    assert_eq!(status, 200);
+    assert!(String::from_utf8(body).unwrap().contains("hello"));
+}
+
 // ---------------------------------------------------------------------------
 // The /sparql face.
 // ---------------------------------------------------------------------------
@@ -687,6 +815,84 @@ fn sparql_get_executes_with_the_default_json_face() {
     );
     let body = String::from_utf8(body).unwrap();
     assert!(body.contains("\"form\":\"select\""), "body was: {body}");
+}
+
+/// `graph=` narrows the dataset (ledger #851): the face forwards it to
+/// `urn:sparql:{form}`, and a REPEATED `graph=` (the SPARQL protocol's own
+/// repeatable spelling) arrives as the one whitespace-separated set the
+/// endpoint takes. The engine keeps only the last of a repeated named
+/// argument, so forwarding them one by one would have narrowed to the last
+/// graph and said nothing. Before the fix the face dropped `graph=` entirely
+/// and every query read the whole default dataset.
+#[test]
+fn sparql_forwards_graph_and_joins_repeats() {
+    let query = ikigai_web_server::sparql::urlencode("SELECT ?s WHERE { ?s ?p ?o }");
+    // No graph named: nothing forwarded, the endpoint's default dataset.
+    let (_, _, body) = get(&format!("/sparql?query={query}"));
+    let body = String::from_utf8(body).unwrap();
+    assert!(body.contains("\"graph\":\"<absent>\""), "body was: {body}");
+    // One graph.
+    let (status, _, body) = get(&format!("/sparql?query={query}&graph=urn:g:a"));
+    assert_eq!(status, 200);
+    let body = String::from_utf8(body).unwrap();
+    assert!(body.contains("\"graph\":\"urn:g:a\""), "body was: {body}");
+    // Repeated: one set, in order.
+    let (_, _, body) = get(&format!(
+        "/sparql?graph=urn:g:a&query={query}&graph=urn:g:b"
+    ));
+    let body = String::from_utf8(body).unwrap();
+    assert!(
+        body.contains("\"graph\":\"urn:g:a urn:g:b\""),
+        "body was: {body}"
+    );
+    // A POSTed form carries repeats too, and its fields replace the URL's.
+    let form = format!("query={query}&graph=urn:g:c&graph=urn:g:d");
+    let (status, _, body) = roundtrip(&format!(
+        "POST /sparql?graph=urn:g:url HTTP/1.1\r\nHost: t\r\n\
+         Content-Type: application/x-www-form-urlencoded\r\n\
+         Content-Length: {}\r\n\r\n{form}",
+        form.len()
+    ));
+    assert_eq!(status, 200);
+    let body = String::from_utf8(body).unwrap();
+    assert!(
+        body.contains("\"graph\":\"urn:g:c urn:g:d\""),
+        "body was: {body}"
+    );
+    // A raw POST body is the query; `graph=` rides the URL.
+    let raw = "SELECT ?s WHERE { ?s ?p ?o }";
+    let (_, _, body) = roundtrip(&format!(
+        "POST /sparql?graph=urn:g:e HTTP/1.1\r\nHost: t\r\n\
+         Content-Type: application/sparql-query\r\nContent-Length: {}\r\n\r\n{raw}",
+        raw.len()
+    ));
+    let body = String::from_utf8(body).unwrap();
+    assert!(body.contains("\"graph\":\"urn:g:e\""), "body was: {body}");
+}
+
+/// The editor page narrows too, and keeps the narrowing for the next Run and
+/// for its raw-result links, so a browser never silently widens a query.
+#[test]
+fn sparql_editor_page_keeps_the_graph() {
+    let query = ikigai_web_server::sparql::urlencode("SELECT ?s WHERE { ?s ?p ?o }");
+    let (status, _, body) = roundtrip(&format!(
+        "GET /sparql?query={query}&graph=urn:g:a&graph=urn:g:b HTTP/1.1\r\nHost: t\r\n\
+         Accept: text/html\r\n\r\n"
+    ));
+    assert_eq!(status, 200);
+    let body = String::from_utf8(body).unwrap();
+    assert!(
+        body.contains("<input type=\"hidden\" name=\"graph\" value=\"urn:g:a\">"),
+        "page was: {body}"
+    );
+    assert!(
+        body.contains("<input type=\"hidden\" name=\"graph\" value=\"urn:g:b\">"),
+        "page was: {body}"
+    );
+    assert!(
+        body.contains("&amp;graph=urn%3Ag%3Aa&amp;graph=urn%3Ag%3Ab"),
+        "page was: {body}"
+    );
 }
 
 /// `Accept: text/csv` becomes `as=text/csv` on the endpoint; ASK routes to
