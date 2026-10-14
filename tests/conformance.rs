@@ -191,11 +191,17 @@ const FIXTURE_IDS: &[&str] = &["demo-upper", "demo-roster", "demo-ledger"];
 
 /// The suite, declared once and run over both kernels: the same claims, so a difference in
 /// the reports is a difference in the KERNEL, never in what was asked of it.
+///
+/// `required_on_mutating` (conformance 0.8.0) holds `demo-ledger`'s Sink to `REQUIRED` too:
+/// the walk drops `content` and fires it once more, and the drop must be refused typed. That
+/// is safe here because the Sink is the side-effect witness, a vector this file owns, and a
+/// refused firing appends nothing (`the_fixture_module_conforms_in_process` counts it).
 fn suite() -> Suite {
     Suite::new()
         .pure("demo-upper")
         .cacheable("demo-upper")
         .cacheable("demo-roster")
+        .required_on_mutating()
 }
 
 // ---------------------------------------------------------------------------
@@ -391,11 +397,13 @@ fn the_fixture_module_conforms_in_process() {
         0,
         "every check runs:\n{report}"
     );
-    // The walk fired the Sink once, through the pipeline probe: the witness works.
+    // The walk fired the Sink once through the pipeline probe and once more without
+    // `content` (REQUIRED, under `required_on_mutating`); only the first landed, so the
+    // witness holds one entry and the refused drop wrote nothing.
     assert_eq!(
         ledger.lock().expect("ledger").len(),
         1,
-        "PIPELINE fired demo-ledger's Sink exactly once"
+        "PIPELINE landed demo-ledger's Sink exactly once; REQUIRED's drop was refused"
     );
 }
 
@@ -646,11 +654,13 @@ fn declared_outputs_are_the_media_types_served_through_the_mount() {
     }
 }
 
-/// **A required input is actually required** — the REQUIRED-IS-REQUIRED check conformance
-/// PENDING #49/#99 proposes and 0.1.0 does not have: drop each required by-value input from
-/// the call and expect `MissingArgument`. Run through the mount, so it also says that a
-/// missing argument is refused with its TYPE intact after a wire round-trip rather than
-/// flattening to a generic endpoint error.
+/// **A required input is actually required**, by hand: drop each required by-value input from
+/// the call and expect `MissingArgument`. Conformance 0.8.0's `REQUIRED` check now does the
+/// walk's half of this (and `suite()` holds the Sink to it too), but it accepts either typed
+/// refusal, `MissingArgument` or `InvalidArgument`. This test is narrower on purpose: through
+/// the mount, the refusal must arrive as `MissingArgument` naming the input, its TYPE intact
+/// after a wire round-trip rather than flattened to a generic endpoint error, and the
+/// witness must say the refused Sink never wrote.
 #[test]
 fn dropping_a_required_input_is_a_typed_refusal_through_the_mount() {
     let mounted = mounted("override");
@@ -706,7 +716,10 @@ fn dropping_a_required_input_is_a_typed_refusal_through_the_mount() {
 ///    0.5's "no thread but its own name" names what is left. A module author who mounted a
 ///    peer this way would be handed another crate's homework with no marker saying so.
 ///    Reported for the conformance PENDING; the keys are pinned below so the day core
-///    changes any of them, this test says so.
+///    changes any of them, this test says so. Conformance 0.8.0's `Suite::own` is the
+///    marker that was missing: scoped to `demo-*`, the same walk reports exactly the
+///    override mount's findings and lists the renamed operations as INHERITED, not walked.
+///    The unscoped walk stays, because the pinned keys are the record of what leaks.
 /// 2. Every `urn:kernel:` FILTER anywhere is name-based, so this is not one crate's problem.
 ///    `serve::index` filters nothing and simply lists what it is given; a *hypothetical*
 ///    write route matching on `urn:kernel:` would not match `urn:edge:kernel:cut` either.
@@ -796,6 +809,26 @@ fn an_alias_mount_re_prefixes_the_peers_kernel_operations_too() {
         ]),
         "core's own operations, walked because the alias renamed them out of every \
          `urn:kernel:` exclusion — none of these are this crate's or the module's:\n{report}"
+    );
+    // `Suite::own` scopes the walk back to the module: the module's findings and nothing
+    // else, and every renamed core operation named as inherited rather than walked.
+    let scoped = suite().own("demo-*").run_blocking(&kernel);
+    eprintln!("--- over an alias mount, own(demo-*) ---\n{scoped}");
+    assert_eq!(
+        finding_keys(&scoped),
+        mine,
+        "scoped to its own ids, the alias walk is the override mount's:\n{scoped}"
+    );
+    assert_eq!(scoped.endpoints, FIXTURE_IDS.len(), "{scoped}");
+    assert!(
+        !scoped.declared.inherited.is_empty()
+            && scoped
+                .declared
+                .inherited
+                .iter()
+                .all(|id| id.starts_with("kernel-")),
+        "what `own` left out is core's operations and only those: {:?}",
+        scoped.declared.inherited
     );
     // And they really are core's, reached under the local name: the peer's catalog answers
     // at `urn:edge:kernel:catalog`, which is the mechanism, not a coincidence of ids.
