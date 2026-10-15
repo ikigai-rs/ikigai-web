@@ -703,23 +703,20 @@ fn dropping_a_required_input_is_a_typed_refusal_through_the_mount() {
 /// arrives re-prefixed — `urn:kernel:catalog` included, as `urn:edge:kernel:catalog`. Two
 /// consequences, both of them found here rather than reasoned about:
 ///
-/// 1. The conformance suite skips core's own operations unless `include_kernel_ops()` asks,
-///    and it recognizes them by their name. Under an alias it does not recognize them, so a
-///    walk of a module reached through an alias mount reports CORE's findings as the
-///    module's: twenty-six of them here (core 0.1.91), on ten operations, in two kinds.
-///    Most are core's own homework and real in any kernel: `ARGSPECS` (inputs declared with
-///    no `class`) and `SKOLEM-RDF`/`CACHEABLE` probes that do not resolve with the minimal
-///    inputs the ArgSpecs allow (`kernel-cached`, `kernel-explain`, `kernel-validate`). The
-///    other kind is the MOUNT's cost again, on core's operations instead of the module's:
-///    `kernel-catalog`, `kernel-actions` and `kernel-topology` hang from a thread in-process
-///    (core 0.1.74's bindings thread), that thread does not cross the wire, and conformance
-///    0.5's "no thread but its own name" names what is left. A module author who mounted a
-///    peer this way would be handed another crate's homework with no marker saying so.
-///    Reported for the conformance PENDING; the keys are pinned below so the day core
-///    changes any of them, this test says so. Conformance 0.8.0's `Suite::own` is the
-///    marker that was missing: scoped to `demo-*`, the same walk reports exactly the
-///    override mount's findings and lists the renamed operations as INHERITED, not walked.
-///    The unscoped walk stays, because the pinned keys are the record of what leaks.
+/// 1. The conformance suite skips core's own operations unless `include_kernel_ops()` asks.
+///    Through 0.8.3 it recognized them by their `urn:kernel:` name, so under an alias it did
+///    not, and a walk of a module reached through an alias mount reported CORE's findings as
+///    the module's: fourteen keys here, on ten operations, in two kinds —
+///    `ARGSPECS` (inputs declared with no `class`) and `SKOLEM-RDF`/`CACHEABLE` probes that
+///    did not resolve with the minimal inputs, or hung from a thread that does not cross the
+///    wire. This test pinned those keys as the record of the leak (ledger #335), and
+///    0.8.0's `Suite::own` was the only way to scope them out by hand.
+///    **Conformance 0.8.4 closes it**: a mounted entry counts as a kernel operation by the
+///    kernel's own op ids, by a re-prefixed op pattern, or as a `kernel-*` id with a
+///    `:kernel:` segment, so the renamed operations are skipped like local ones and never
+///    walked. The unscoped walk now reports no core finding and walks only the module's
+///    three endpoints, and `own` has nothing left to declare inherited. The assertions
+///    below pin that, so a regression in the suite's recognition fails here by name.
 /// 2. Every `urn:kernel:` FILTER anywhere is name-based, so this is not one crate's problem.
 ///    `serve::index` filters nothing and simply lists what it is given; a *hypothetical*
 ///    write route matching on `urn:kernel:` would not match `urn:edge:kernel:cut` either.
@@ -754,8 +751,9 @@ fn an_alias_mount_re_prefixes_the_peers_kernel_operations_too() {
         .map(|e| e.pattern)
         // ★ An alias mount re-prefixes the PEER's kernel operations too, so they arrive as
         // `urn:edge:kernel:catalog` and a `urn:kernel:` prefix test does not see them. The
-        // conformance suite excludes kernel ops the same way, which means a module walked
-        // through an alias mount has core's operations walked as if they were the module's.
+        // conformance suite excluded kernel ops the same way through 0.8.3, so a module walked
+        // through an alias mount had core's operations walked as if they were the module's;
+        // 0.8.4 recognizes the renamed operations (see the doc comment above).
         .filter(|p| !p.contains("kernel:"))
         .collect();
     assert_eq!(
@@ -789,29 +787,16 @@ fn an_alias_mount_re_prefixes_the_peers_kernel_operations_too() {
         finding_keys(&override_mount),
         "the module's own findings are the override mount's, unchanged:\n{report}"
     );
-    assert_eq!(
-        core_s,
-        BTreeSet::from([
-            "kernel-actions ArgSpecs".to_string(),
-            "kernel-actions Cacheable".to_string(),
-            "kernel-cache ArgSpecs".to_string(),
-            "kernel-cached ArgSpecs".to_string(),
-            "kernel-cached Cacheable".to_string(),
-            "kernel-catalog Cacheable".to_string(),
-            "kernel-cut ArgSpecs".to_string(),
-            "kernel-dependents ArgSpecs".to_string(),
-            "kernel-explain ArgSpecs".to_string(),
-            "kernel-explain SkolemRdf".to_string(),
-            "kernel-threads ArgSpecs".to_string(),
-            "kernel-topology Cacheable".to_string(),
-            "kernel-validate ArgSpecs".to_string(),
-            "kernel-validate SkolemRdf".to_string(),
-        ]),
-        "core's own operations, walked because the alias renamed them out of every \
-         `urn:kernel:` exclusion — none of these are this crate's or the module's:\n{report}"
+    assert!(
+        core_s.is_empty(),
+        "no core operation leaks through the alias as the module's: {core_s:?}\n{report}"
     );
-    // `Suite::own` scopes the walk back to the module: the module's findings and nothing
-    // else, and every renamed core operation named as inherited rather than walked.
+    // The unscoped walk covers the module's three endpoints and nothing else: the ten renamed
+    // core operations are skipped, not walked (through 0.8.3 this count was thirteen).
+    assert_eq!(report.endpoints, FIXTURE_IDS.len(), "{report}");
+    // `Suite::own` is no longer needed here, and agrees: scoped to `demo-*`, the walk is the
+    // same, and there is nothing left for it to name as inherited, because the suite never
+    // reached core's operations to begin with.
     let scoped = suite().own("demo-*").run_blocking(&kernel);
     eprintln!("--- over an alias mount, own(demo-*) ---\n{scoped}");
     assert_eq!(
@@ -821,13 +806,8 @@ fn an_alias_mount_re_prefixes_the_peers_kernel_operations_too() {
     );
     assert_eq!(scoped.endpoints, FIXTURE_IDS.len(), "{scoped}");
     assert!(
-        !scoped.declared.inherited.is_empty()
-            && scoped
-                .declared
-                .inherited
-                .iter()
-                .all(|id| id.starts_with("kernel-")),
-        "what `own` left out is core's operations and only those: {:?}",
+        scoped.declared.inherited.is_empty(),
+        "the renamed core operations are skipped before `own` sees them: {:?}",
         scoped.declared.inherited
     );
     // And they really are core's, reached under the local name: the peer's catalog answers
