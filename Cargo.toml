@@ -91,7 +91,12 @@ libc = "0.2"
 # REQUIRED, `Suite::own`, `Checks::STATIC` (0.8). No new finding on the upgrade. It pulls
 # ikigai-core and ikigai-vocab to 0.1.100+ in every test build; the library floors above
 # stay where the server's code needs them. Still a CEILING: `<0.9.0`.
-ikigai-conformance = "0.8.0"
+#
+# 0.8.4, from 0.8.0 (2026-10-14): the floor `tests/conformance.rs` needs. 0.8.4 recognizes
+# kernel operations reached through an ALIAS mount (`urn:edge:kernel:catalog`; ledger #335),
+# so `an_alias_mount_re_prefixes_the_peers_kernel_operations_too` asserts no core finding
+# leaks, where it used to pin the fourteen that did. On 0.8.0-0.8.3 that test fails.
+ikigai-conformance = "0.8.4"
 # `run_blocking` is the suite's own executor; the by-hand pins need one too.
 # (The peer half of the mount — a real Unix-socket kernel server — is
 # `ikigai-ipc::serve`, already a normal dependency for its client half.)

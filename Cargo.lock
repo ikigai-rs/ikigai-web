@@ -294,9 +294,9 @@ dependencies = [
 
 [[package]]
 name = "ikigai-conformance"
-version = "0.8.0"
+version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac980114264c162b0a4cb86c55e455d1221b848b46745786c1831c9f22c063bd"
+checksum = "2cddfd48b0977c490c74c61cda6f5d5e8f70c93ed0b8b38b8bfd1bab02f93b1d"
 dependencies = [
  "futures",
  "ikigai-core",
@@ -346,9 +346,9 @@ dependencies = [
 
 [[package]]
 name = "ikigai-vocab"
-version = "0.1.102"
+version = "0.1.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79aa459049a5b94d2cc340b95aae42e0d721f2a1fd25781242ea7c4a4eed3a94"
+checksum = "dbbc73da4eb948e9d7a19834e2d0099edabd5401af2fde7d9cc881e5b08f19b4"
 dependencies = [
  "ikigai-core",
  "serde_json",
