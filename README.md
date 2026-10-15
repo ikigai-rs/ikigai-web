@@ -334,6 +334,13 @@ two kernels built from the *same* endpoints: in-process, and through
   as if they were the module's. An argument for allowlists over denylists; this
   server's write route is an allowlist.
 
+## Accessibility
+
+[ACCESSIBILITY.md](ACCESSIBILITY.md) says what the index page, the browse shell and the SPARQL
+editor aim at (WCAG 2.2 AA, evaluation in progress, no conformance claim), what has been tested,
+the barriers known today, and how to report one: an issue with the `accessibility` label, or
+private vulnerability reporting for anything sensitive.
+
 ## License
 
 MIT OR Apache-2.0, at your option.
