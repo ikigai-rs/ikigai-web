@@ -20,6 +20,22 @@
 //! assertions hold on both; only the Linux run can show the spin, so CI (ubuntu) is where the
 //! unfixed loop fails. Measured against the unfixed loop: 1.00 of a core on ubuntu CI, 0.000 on
 //! macOS.
+//!
+//! ⚠ **Nothing here may depend on machine speed** (ledger #1685). Two things used to:
+//!
+//! - **A CPU fraction is vacuous under load.** A spinning thread gets only the share of a core the
+//!   scheduler gives it: measured on an 18-core Mac, a pure spin read 0.79 of a core idle, 0.38
+//!   beside 36 busy loops, 0.17 beside 72 and 0.09 beside 144, so a loaded Linux box would pass a
+//!   spinning loop under the 0.25 threshold. The cpu check stays (it cannot fail falsely: load
+//!   only lowers it), but what proves the backoff now is a COUNT the scheduler cannot shrink: the
+//!   episode's own report of how long its waits add up to must fit inside the time the child
+//!   watched it. A loop that does not sleep its waits overruns that by its whole schedule on any
+//!   machine (10.27s claimed inside a ~2.3s window on macOS, where nothing spins; unbounded on
+//!   Linux).
+//! - **A fixed sleep is not a started marker.** Both scenarios slept 300ms and assumed the loop
+//!   was failing by then. Each now waits for the server's own `accept failing` line (its stderr
+//!   is teed through a pipe the child reads), so a slow start delays the scenario instead of
+//!   racing it. Every other wait is a wedge catcher, generous by design, never a bound under test.
 
 #![cfg(unix)]
 
@@ -45,6 +61,10 @@ const FD_LIMIT: libc::rlim_t = 128;
 
 /// How long the CPU is sampled while the server is out of descriptors.
 const SAMPLE: Duration = Duration::from_secs(2);
+
+/// How long any wait for the server may take before the scenario calls it wedged. A wedge
+/// catcher, never a bound under test: a passing run returns as soon as the server acts.
+const WEDGE: Duration = Duration::from_secs(60);
 
 /// Run one scenario in a child process; return (stdout, stderr). `output()` waits for the
 /// child to be REAPED, so its status is final (field guide 9h).
@@ -94,6 +114,74 @@ fn cpu_time() -> Duration {
         Duration::from_secs(t.tv_sec as u64) + Duration::from_micros(t.tv_usec as u64)
     };
     tv(usage.ru_utime) + tv(usage.ru_stime)
+}
+
+/// Tee this process's stderr through a pipe and return a receiver that fires when the server
+/// reports its first failed accept: the started marker for an exhaustion episode.
+///
+/// Everything written to fd 2 still reaches the real stderr (the parent asserts on it); call
+/// [`StderrTee::finish`] before the child returns so the last lines are forwarded before the
+/// process exits. Set up BEFORE the table is filled: it needs three descriptors and the
+/// forwarding needs none afterward.
+struct StderrTee {
+    saved: i32,
+    forwarder: std::thread::JoinHandle<()>,
+}
+
+impl StderrTee {
+    fn start() -> (Self, Receiver<()>) {
+        let mut ends = [0; 2];
+        // SAFETY: pipe(2) fills two fresh descriptors; dup/dup2 operate on descriptors this
+        // process owns, and fd 2 is replaced, not closed, so stderr is never missing.
+        let saved = unsafe {
+            assert_eq!(libc::pipe(ends.as_mut_ptr()), 0);
+            let saved = libc::dup(2);
+            assert!(saved >= 0);
+            assert_eq!(libc::dup2(ends[1], 2), 2);
+            libc::close(ends[1]);
+            saved
+        };
+        // SAFETY: `ends[0]` is the pipe's read end, owned by nothing else; `saved` is a dup the
+        // forwarder writes through, which `finish` closes after it joins.
+        let mut from = unsafe { File::from_raw_fd(ends[0]) };
+        let mut to = std::mem::ManuallyDrop::new(unsafe { File::from_raw_fd(saved) });
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let forwarder = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            let mut buf = [0u8; 4096];
+            let mut started = Some(started_tx);
+            while let Ok(n) = from.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                let _ = to.write_all(&buf[..n]);
+                if started.is_some() {
+                    seen.extend_from_slice(&buf[..n]);
+                    if String::from_utf8_lossy(&seen).contains("accept failing") {
+                        let _ = started.take().map(|tx| tx.send(()));
+                    }
+                }
+            }
+        });
+        (Self { saved, forwarder }, started_rx)
+    }
+
+    /// Put the real stderr back on fd 2 (closing the pipe's last write end) and wait until
+    /// everything written so far has been forwarded.
+    fn finish(self) {
+        // SAFETY: `saved` is the original stderr, still open; dup2 replaces fd 2 atomically.
+        unsafe { assert_eq!(libc::dup2(self.saved, 2), 2) };
+        self.forwarder.join().expect("stderr forwarder");
+        // SAFETY: the forwarder (the only other user of `saved`) has ended.
+        unsafe { libc::close(self.saved) };
+    }
+}
+
+/// Wait for the started marker: the server has failed an accept, so the episode is under way.
+fn await_episode(started: &Receiver<()>) {
+    started
+        .recv_timeout(WEDGE)
+        .expect("the server never reported a failed accept: the scenario did not reach EMFILE");
 }
 
 fn lower_fd_limit() {
@@ -228,10 +316,7 @@ const REQUEST: &[u8] = b"GET / HTTP/1.1\r\nHost: test\r\n\r\n";
 
 /// Read one response; true when it is HTTP.
 fn answered(client: &mut TcpStream) -> bool {
-    if client
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .is_err()
-    {
+    if client.set_read_timeout(Some(WEDGE)).is_err() {
         return false;
     }
     let mut response = Vec::new();
@@ -266,6 +351,31 @@ fn exhaustion_does_not_spin_and_the_door_serves_again_once_descriptors_free_up()
         stderr.contains("accept recovered"),
         "the episode's end was not reported:\n{stderr}"
     );
+    // The speed-independent half: the waits the backoff handed out must have been SLEPT. A
+    // correct loop sleeps each one before retrying, so their sum fits inside the window the
+    // child watched (from before the first connection to after recovery) on any machine; a
+    // loop that retries without sleeping claims its whole schedule in no time at all.
+    let (failures, backed_off_ms) = recovered(&stderr);
+    let window_ms: u128 = result(&stdout, "window_ms").parse().unwrap();
+    assert!(
+        backed_off_ms <= window_ms,
+        "{failures} failed accepts claim {backed_off_ms}ms of backoff inside a {window_ms}ms \
+         window: the loop retried without sleeping its waits"
+    );
+}
+
+/// The episode's report: `accept recovered after N failed attempts (~Mms backed off)`.
+fn recovered(stderr: &str) -> (u32, u128) {
+    let line = stderr
+        .lines()
+        .find_map(|line| {
+            line.split_once("accept recovered after ")
+                .map(|(_, rest)| rest)
+        })
+        .unwrap_or_else(|| panic!("no recovery report:\n{stderr}"));
+    let (failures, rest) = line.split_once(" failed attempts (~").expect(line);
+    let (millis, _) = rest.split_once("ms backed off").expect(line);
+    (failures.parse().expect(line), millis.parse().expect(line))
 }
 
 #[test]
@@ -274,11 +384,13 @@ fn child_exhaust_then_recover() {
     if std::env::var_os(CHILD).is_none() {
         return;
     }
+    let (tee, started) = StderrTee::start();
     lower_fd_limit();
     let (addr, _fd, _ended) = spawn_server();
+    let window = Instant::now();
     let (mut clients, fillers) = exhaust(addr);
 
-    std::thread::sleep(Duration::from_millis(300));
+    await_episode(&started);
     let (cpu0, wall0) = (cpu_time(), Instant::now());
     std::thread::sleep(SAMPLE);
     let busy = (cpu_time() - cpu0).as_secs_f64() / wall0.elapsed().as_secs_f64();
@@ -290,7 +402,11 @@ fn child_exhaust_then_recover() {
     let mut fresh = TcpStream::connect(addr).expect("connect after recovery");
     fresh.write_all(REQUEST).unwrap();
     println!("RESULT fresh_served={}", answered(&mut fresh));
+    // The server logged its recovery before it answered `fresh`, so the episode ended inside
+    // the window.
+    println!("RESULT window_ms={}", window.elapsed().as_millis());
     println!("RESULT queued_served={}", answered(&mut clients[0]));
+    tee.finish();
 }
 
 #[test]
@@ -313,16 +429,17 @@ fn child_listener_dies_while_backing_off() {
     if std::env::var_os(CHILD).is_none() {
         return;
     }
+    let (tee, started) = StderrTee::start();
     lower_fd_limit();
     let (addr, fd, ended) = spawn_server();
     let (_clients, fillers) = exhaust(addr);
-    std::thread::sleep(Duration::from_millis(300));
+    await_episode(&started);
     // Kill the listener under the loop: its descriptor now names /dev/null, so the next accept
     // answers ENOTSOCK. The loop must RETRY to see that, and it does only while the listener's
     // readiness stays set — tokio clears it only on WouldBlock, never on EMFILE. Linux keeps the
     // first connection queued, so readiness never clears; macOS aborts one queued connection
-    // per failed accept, and [`QUEUED`] of them at a doubling backoff outlast this sleep by
-    // seconds. Without that, the loop would wait for an event the closed socket cannot send.
+    // per failed accept, and [`QUEUED`] of them at a doubling backoff outlast the first failure
+    // by seconds. Without that, the loop would wait for an event the closed socket cannot send.
     // SAFETY: dup2 onto a descriptor this process owns; the listener closes it on drop.
     assert_eq!(unsafe { libc::dup2(fillers[0].as_raw_fd(), fd) }, fd);
     // ⚠ While the table is still full, Linux may not say ENOTSOCK at all: its `accept4`
@@ -333,11 +450,12 @@ fn child_listener_dies_while_backing_off() {
     let early = ended.recv_timeout(Duration::from_millis(1500)).ok();
     println!("RESULT ended_while_full={}", early.is_some());
     drop(fillers);
-    let ended_with = match early.or_else(|| ended.recv_timeout(Duration::from_secs(5)).ok()) {
+    let ended_with = match early.or_else(|| ended.recv_timeout(WEDGE).ok()) {
         Some(error) => error
             .raw_os_error()
             .map_or_else(|| format!("{error:?}"), |code| code.to_string()),
         None => "still-running".to_string(),
     };
     println!("RESULT ended_with={ended_with}");
+    tee.finish();
 }
