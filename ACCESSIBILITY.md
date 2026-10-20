@@ -41,8 +41,9 @@ known barriers below are open.
 - **The SPARQL editor** (`GET /sparql` with `Accept: text/html`): the form, the highlighted query,
   the sample queries, and each result state (a table, a boolean, Turtle, an error), with and
   without JavaScript.
-- **The browse shell** (`GET /browse/{uri}`): the page, its style (`BROWSE_CSS`) and its one
-  script of its own (`SHELL_JS`), which writes a refusal note where an affordance was refused.
+- **The browse shell** (`GET /browse/{uri}`): the page, its style (`BROWSE_CSS`, served as
+  `/browse.css`) and its one script of its own (`SHELL_JS`, served as `/shell.js`), which writes
+  a refusal note where an affordance was refused.
 - **Error answers** outside the editor: each is a short `text/plain` sentence with its HTTP status.
 
 ### Not ours to fix, still ours to report

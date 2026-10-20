@@ -59,6 +59,18 @@
 //! mounts a machine config actually uses, which until this arc DROPPED the
 //! capability at the wire (see `mounts.rs`, `LazyIpcResolver::issue_as`).
 //!
+//! **The door** ([`serve`], ledger #1795). Neither setting stops a page on
+//! ANOTHER site from pointing the owner's browser here. So every method but
+//! GET/HEAD/OPTIONS passes the cli ikigai-web library's `OriginCheck` before
+//! any route (the door's origins come from the bound address,
+//! [`serve::door_origins`]), and a write another origin started is a 403. And
+//! everything this server RELAYS (each representation a mount answers, and
+//! each refusal) is served under the page policy plus `sandbox`
+//! ([`serve::relayed_csp`]), so a page planted in a mounted file jail renders
+//! without script in an opaque origin; this server's own pages carry the
+//! library's `HTML_DOOR_CSP` and its companion headers, and load their style
+//! and script as files.
+//!
 //! What this is not: authentication. Every caller on the LAN gets the same
 //! ceiling; there is no per-person capability and no auth theater in front of
 //! it (no token in a URL, no password form). Per-person authority is the

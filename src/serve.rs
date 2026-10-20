@@ -10,7 +10,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use ikigai_core::{ArgRef, Capability, Error, Expiry, Iri, Kernel, Representation, Request, Verb};
+use ikigai_core::{
+    ArgRef, Capability, Error, Expiry, Iri, Kernel, ReprType, Representation, Request, Verb,
+};
+use ikigai_fn::html::{attr, html_text};
+use ikigai_web::{OriginCheck, SecurityHeaders, HTML_DOOR_CSP};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -77,6 +81,9 @@ pub(crate) struct Face {
     capability: Capability,
     ceiling: Ceiling,
     posture: Posture,
+    /// This door's own origins, from the address it is bound to ([`door_origins`]): the only
+    /// pages whose writes it admits ([`origin_refusal`]).
+    origins: OriginCheck,
 }
 
 impl Face {
@@ -127,11 +134,17 @@ pub async fn serve_until_error(
     if let Err(refusal) = ceiling.admits(posture) {
         panic!("{refusal}");
     }
+    let bound = listener
+        .local_addr()
+        .expect("refusing to serve: cannot read the bound address to name this door's origins");
+    let origins = OriginCheck::new(door_origins(bound))
+        .expect("the origins of a bound socket address always parse");
     let face = Arc::new(Face {
         kernel,
         capability: ceiling.capability(),
         ceiling,
         posture,
+        origins,
     });
     let mut backoff = accept::Backoff::default();
     loop {
@@ -154,6 +167,86 @@ pub async fn serve_until_error(
             let _ = handle(face, stream).await;
         });
     }
+}
+
+/// The origins a browser names when a page of THIS door makes a request: what [`OriginCheck`]
+/// admits writes from. Derived from the socket actually bound, like the posture, and never read
+/// off the request's `Host`, which under DNS rebinding is the attacker's name.
+///
+/// - A loopback bind is reached by its address literal and by `localhost` (a browser resolves
+///   that name to loopback itself, so no other host can answer to it).
+/// - An unspecified bind (`0.0.0.0`, `::`) also accepts loopback connections, so it names the
+///   loopback origins; the LAN addresses it answers on are not knowable from the socket, so a
+///   browser page served from one of them cannot POST here. That costs nothing today: the
+///   posture is read-only there, the one write a non-loopback bind admits is a `/sparql`
+///   query, and the editor page sends its query by GET.
+/// - Any other address names itself.
+///
+/// This server speaks plain HTTP only, so every origin is `http://`.
+///
+/// ```
+/// use ikigai_web_server::serve::door_origins;
+/// assert_eq!(
+///     door_origins("127.0.0.1:8642".parse().unwrap()),
+///     ["http://127.0.0.1:8642", "http://localhost:8642"]
+/// );
+/// assert_eq!(
+///     door_origins("[::1]:8642".parse().unwrap()),
+///     ["http://[::1]:8642", "http://localhost:8642"]
+/// );
+/// assert_eq!(
+///     door_origins("0.0.0.0:8642".parse().unwrap()),
+///     ["http://127.0.0.1:8642", "http://localhost:8642"]
+/// );
+/// assert_eq!(
+///     door_origins("192.168.1.5:8642".parse().unwrap()),
+///     ["http://192.168.1.5:8642"]
+/// );
+/// ```
+pub fn door_origins(bound: std::net::SocketAddr) -> Vec<String> {
+    let port = bound.port();
+    let ip = bound.ip();
+    let literal = |ip: std::net::IpAddr| match ip {
+        std::net::IpAddr::V4(v4) => format!("http://{v4}:{port}"),
+        std::net::IpAddr::V6(v6) => format!("http://[{v6}]:{port}"),
+    };
+    let localhost = format!("http://localhost:{port}");
+    if ip.is_loopback() {
+        vec![literal(ip), localhost]
+    } else if ip.is_unspecified() {
+        let loopback = match ip {
+            std::net::IpAddr::V4(_) => std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            std::net::IpAddr::V6(_) => std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+        };
+        vec![literal(loopback), localhost]
+    } else {
+        vec![literal(ip)]
+    }
+}
+
+/// The refusal for a request another origin started, or `None` to admit it: the cli
+/// ikigai-web library's [`OriginCheck`], the ecosystem's one implementation of the rule
+/// (ledger #1813). Every method but `GET`, `HEAD` and `OPTIONS` is checked; a present `Origin`
+/// must be one of [`door_origins`]; with no `Origin`, `Sec-Fetch-Site` must say `same-origin`
+/// or `none`; with neither, the write is admitted only when it carries no cookie and no
+/// `Authorization` a browser would replay on its own (anything but `Bearer`), so `curl` keeps
+/// working.
+///
+/// ★ An ADAPTER, not the library's edge: this server parses HTTP itself (one request per
+/// connection, its own routes, its own read-only gate), and adopting the library's
+/// `serve_with_listener` would replace all of it. So the check is called on a copy of the two
+/// things it reads, the method and the headers; the path, query and body are left empty
+/// because the rule does not look at them, and copying a 1 MiB body to decide on two headers
+/// would be waste. If the rule ever reads more, this is the line that must change with it.
+fn origin_refusal(origins: &OriginCheck, req: &HttpRequest) -> Option<ikigai_web::Refusal> {
+    origins.check(&ikigai_web::HttpRequest {
+        method: req.method.clone(),
+        path: String::new(),
+        query: Vec::new(),
+        headers: req.headers.clone(),
+        body: Vec::new(),
+        peer: None,
+    })
 }
 
 /// One connection: read a request (bounded, within a time budget), respond,
@@ -526,11 +619,32 @@ async fn respond(face: &Face, req: HttpRequest) -> Resp {
             .push(("Allow".to_string(), "GET, HEAD".to_string()));
         return resp;
     }
+    // The origin gate — the second choke point, also before any route: a write another
+    // origin started is refused here, before the kernel is asked (ledger #1795). On loopback
+    // this is what stands between a page on any site and the annotation Sink, which every
+    // request reaches as root there.
+    if let Some(refusal) = origin_refusal(&face.origins, &req) {
+        return error_resp(refusal.status, &refusal.reason);
+    }
     if req.path == "/" {
         return index(face).await;
     }
     if req.path == "/htmx.min.js" {
         return htmx_js();
+    }
+    // The pages' own style and script, served as files so the page policy
+    // ([`HTML_DOOR_CSP`]) needs no inline exception.
+    if req.path == "/browse.css" {
+        return asset(&req, "text/css", BROWSE_CSS);
+    }
+    if req.path == "/shell.js" {
+        return asset(&req, "text/javascript", SHELL_JS);
+    }
+    if req.path == "/sparql.css" {
+        return asset(&req, "text/css", crate::sparql::SPARQL_CSS);
+    }
+    if req.path == "/sparql.js" {
+        return asset(&req, "text/javascript", crate::sparql::EDITOR_JS);
     }
     if req.path == "/sparql" {
         return crate::sparql::respond(face, &req).await;
@@ -866,25 +980,40 @@ fn browse_shell(start: &str, posture: Posture) -> Resp {
     // Read-only: don't OFFER the annotate form the gate would 403. The form
     // markup comes from the mounted peer's faces, which have no adapter-level
     // flag to omit it (`chrome=embed` strips crumbs only) — so the shell,
-    // whose job is dressing the faces, undresses this one affordance. The
-    // ENFORCEMENT is the gate in [`respond`]; this is honesty of presentation,
-    // not the security boundary.
-    let readonly_css = match posture {
-        Posture::ReadOnly => ".browse-annotate{display:none}",
+    // whose job is dressing the faces, undresses this one affordance (the
+    // `.readonly` rule in [`BROWSE_CSS`]). The ENFORCEMENT is the gate in
+    // [`respond`]; this is honesty of presentation, not the security boundary.
+    let body_class = match posture {
+        Posture::ReadOnly => " class=\"readonly\"",
         Posture::LocalOwner => "",
     };
-    let start = html_escape(start);
+    // ★ htmx is configured for the page policy and for content this page did not write.
+    // `allowEval:false` and `includeIndicatorStyles:false` ask for nothing the CSP would block
+    // (an eval, an injected `<style>`). `allowScriptTags:false` matters more: a face is swapped
+    // in as markup, and a `<script src>` inside it would be same-origin, which `script-src
+    // 'self'` admits. With it off, htmx runs no script that arrives in a swap. The JSON sits in
+    // a single-quoted attribute, so it holds no `'`.
+    let title = html_text(start);
+    let target = attr(start);
     let body = format!(
         "<!doctype html><html><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-         <title>{start}</title>\
+         <title>{title}</title>\
+         <meta name=\"htmx-config\" \
+         content='{{\"allowEval\":false,\"includeIndicatorStyles\":false,\"allowScriptTags\":false}}'>\
          <script src=\"/htmx.min.js\"></script>\
          <link rel=\"stylesheet\" href=\"/k/source urn:repo:style\">\
-         <style>{BROWSE_CSS}{readonly_css}</style></head><body>\
-         <main id=\"browse\" hx-get=\"/k/source {start} as=text/html\" \
-         hx-trigger=\"load\" hx-swap=\"innerHTML\">loading {start}…</main>\
-         <script>{SHELL_JS}</script></body></html>\n"
+         <link rel=\"stylesheet\" href=\"/browse.css\"></head><body{body_class}>\
+         <main id=\"browse\" hx-get=\"/k/source {target} as=text/html\" \
+         hx-trigger=\"load\" hx-swap=\"innerHTML\">loading {title}…</main>\
+         <script src=\"/shell.js\"></script></body></html>\n"
     );
+    page_resp(body)
+}
+
+/// One of this server's own HTML pages: under the page policy ([`HTML_DOOR_CSP`]), never
+/// stored. Everything else this server answers is relayed and sandboxed ([`write_response`]).
+pub(crate) fn page_resp(body: String) -> Resp {
     Resp {
         status: 200,
         headers: vec![
@@ -893,10 +1022,24 @@ fn browse_shell(start: &str, posture: Posture) -> Resp {
                 "text/html; charset=utf-8".to_string(),
             ),
             ("Cache-Control".to_string(), "no-store".to_string()),
+            (
+                "Content-Security-Policy".to_string(),
+                HTML_DOOR_CSP.to_string(),
+            ),
         ],
         body: body.into_bytes(),
         suppress_body: false,
     }
+}
+
+/// A style sheet or script compiled into this binary, served like a cacheable representation:
+/// `public, no-cache` with a content `ETag`, so a new build is seen at the next load and an
+/// unchanged one costs a bodyless 304.
+fn asset(req: &HttpRequest, media: &str, text: &'static str) -> Resp {
+    source_resp(
+        req,
+        Representation::new(ReprType::new(media), text).cacheable(),
+    )
 }
 
 /// Just enough style for the faces' `browse-*` classes to read comfortably —
@@ -927,6 +1070,7 @@ const BROWSE_CSS: &str = "\
  .affordance-error{margin:.4rem 0;padding:.4rem .6rem;border-radius:6px;\
    border:1px solid light-dark(#d93025,#f28b82);color:light-dark(#a50e0e,#f28b82);\
    white-space:pre-wrap;max-width:40rem}\
+ .readonly .browse-annotate{display:none}\
 ";
 
 /// The shell's one behavior of its own: say WHY when an affordance is refused
@@ -1024,7 +1168,7 @@ async fn index(face: &Face) -> Resp {
         } else {
             ""
         };
-        let name = html_escape(name);
+        let name = attr(name);
         repos.push_str(&format!(
             "<li><a href=\"/browse/urn:repo:{name}:tree\"><code>{name}</code></a>{badge}</li>\n"
         ));
@@ -1036,7 +1180,7 @@ async fn index(face: &Face) -> Resp {
     };
     let mut rows = String::new();
     for entry in &entries {
-        let pattern = html_escape(&entry.pattern);
+        let pattern = attr(&entry.pattern);
         // A repo tree opens in the htmx shell (clickable browse); everything
         // else resolves directly.
         let href = if entry.pattern.starts_with("urn:repo:") && entry.pattern.ends_with(":tree") {
@@ -1046,7 +1190,7 @@ async fn index(face: &Face) -> Resp {
         };
         rows.push_str(&format!(
             "<li><a href=\"{href}\"><code>{pattern}</code></a> <small>{}</small></li>\n",
-            html_escape(&entry.endpoint)
+            html_text(&entry.endpoint)
         ));
     }
     // The ceiling in force, stated where an operator looks: what this face can
@@ -1058,7 +1202,7 @@ async fn index(face: &Face) -> Resp {
         Some(scopes) => {
             let items: String = scopes
                 .iter()
-                .map(|scope| format!("<li><code>{}</code></li>", html_escape(scope)))
+                .map(|scope| format!("<li><code>{}</code></li>", html_text(scope)))
                 .collect();
             format!(
                 "<h2>Capability ceiling</h2><p>Every request through this face holds \
@@ -1071,7 +1215,7 @@ async fn index(face: &Face) -> Resp {
         "<!doctype html><html><head><meta charset=\"utf-8\">\
          <title>ikigai</title>\
          <link rel=\"stylesheet\" href=\"/k/source urn:repo:style\">\
-         <style>{BROWSE_CSS}</style></head><body>\
+         <link rel=\"stylesheet\" href=\"/browse.css\"></head><body>\
          <h1>ikigai</h1>\
          <p>Resources this kernel serves. Open any <code>urn:*</code> as a path, \
          e.g. <code>/urn:repo:ikigai-core:tree</code>.</p>\
@@ -1082,25 +1226,7 @@ async fn index(face: &Face) -> Resp {
          <h2>Catalog</h2><ul>\n{rows}</ul>\
          {ceiling}</body></html>\n"
     );
-    Resp {
-        status: 200,
-        headers: vec![
-            (
-                "Content-Type".to_string(),
-                "text/html; charset=utf-8".to_string(),
-            ),
-            ("Cache-Control".to_string(), "no-store".to_string()),
-        ],
-        body: body.into_bytes(),
-        suppress_body: false,
-    }
-}
-
-pub(crate) fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+    page_resp(body)
 }
 
 /// The `Content-Type` header for a representation: its canonical media type,
@@ -1133,10 +1259,55 @@ fn reason(status: u16) -> &'static str {
     }
 }
 
+/// The `Content-Security-Policy` of everything this server RELAYS rather than writes: every
+/// representation a mount answers (`/{iri}`, `/k/`, `/meta/`, `/sparql` results, a write's
+/// answer), and every refusal. The page policy plus `sandbox` with no `allow-*` token.
+///
+/// ★ Why `sandbox` and not `Content-Disposition: attachment` (ledger #1795). A mounted file
+/// jail answers `text/html` for a `.html` file, so a page planted there, navigated to here,
+/// would run script with this origin's authority: read whatever the ceiling reaches and post
+/// to the annotation Sink as the owner. `sandbox` gives such a document an opaque origin and
+/// runs no script in it, while it still RENDERS, so the browse faces stay readable at their
+/// own URLs. It covers every media type a browser runs script in (SVG as well as HTML) without
+/// this server deciding which types are dangerous, and without knowing which mount is
+/// writable, which it cannot know. `attachment` would turn every HTML face into a download,
+/// and only for the types someone remembered to list.
+///
+/// ⚠ Neither header governs a FETCH: htmx reads `/k/source` with XHR and swaps the markup
+/// into the shell, where this policy does not apply and the page's does. Script on that path
+/// is held by the page policy (`script-src 'self'`, no inline script) and by htmx's
+/// `allowScriptTags:false` (see the browse shell).
+pub fn relayed_csp() -> String {
+    format!("{HTML_DOOR_CSP}; sandbox")
+}
+
 async fn write_response(stream: &mut TcpStream, resp: Resp) -> std::io::Result<()> {
     let mut head = format!("HTTP/1.1 {} {}\r\n", resp.status, reason(resp.status));
     for (name, value) in &resp.headers {
         head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    // The door's response headers, from the ONE definition of them (the cli ikigai-web
+    // library's `SecurityHeaders::html_door`), on every answer, refusals included. A page
+    // brings its own CSP ([`page_resp`]); anything that did not is relayed, and sandboxed
+    // ([`relayed_csp`]): failing closed, so a route added later is sandboxed until it says
+    // it is a page. HSTS is never sent: this server speaks plain HTTP only, and RFC 6797
+    // forbids the header there.
+    if !resp
+        .headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("content-security-policy"))
+    {
+        head.push_str(&format!("Content-Security-Policy: {}\r\n", relayed_csp()));
+    }
+    let door = SecurityHeaders::html_door();
+    if door.nosniff {
+        head.push_str("X-Content-Type-Options: nosniff\r\n");
+    }
+    if let Some(policy) = &door.referrer_policy {
+        head.push_str(&format!("Referrer-Policy: {policy}\r\n"));
+    }
+    if let Some(coop) = &door.coop {
+        head.push_str(&format!("Cross-Origin-Opener-Policy: {coop}\r\n"));
     }
     // A 304 is not a zero-length body, it is NO body — announcing
     // `Content-Length: 0` on one misleads a cache about the stored response it
@@ -1144,7 +1315,7 @@ async fn write_response(stream: &mut TcpStream, resp: Resp) -> std::io::Result<(
     if resp.status != 304 {
         head.push_str(&format!("Content-Length: {}\r\n", resp.body.len()));
     }
-    head.push_str("X-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n");
+    head.push_str("Connection: close\r\n\r\n");
     stream.write_all(head.as_bytes()).await?;
     if !resp.suppress_body {
         stream.write_all(&resp.body).await?;

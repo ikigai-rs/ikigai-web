@@ -707,8 +707,35 @@ fn browse_shell_hosts_the_faces() {
 /// all on a refusal.
 #[test]
 fn browse_shell_shows_refusals_where_they_happen() {
-    let (_, _, body) = get("/browse/urn:repo:demo:tree");
-    let body = String::from_utf8(body).unwrap();
+    // The shell loads its script and style as files (the page policy allows no inline
+    // script or style), so the handler is read where the browser reads it.
+    let (_, _, shell) = get("/browse/urn:repo:demo:tree");
+    let shell = String::from_utf8(shell).unwrap();
+    assert!(
+        shell.contains("<script src=\"/shell.js\">"),
+        "shell was: {shell}"
+    );
+    assert!(
+        shell.contains("<link rel=\"stylesheet\" href=\"/browse.css\">"),
+        "shell was: {shell}"
+    );
+    let (status, headers, script) = get("/shell.js");
+    assert_eq!(status, 200);
+    assert_eq!(
+        header(&headers, "content-type"),
+        Some("text/javascript; charset=utf-8")
+    );
+    let (status, headers, style) = get("/browse.css");
+    assert_eq!(status, 200);
+    assert_eq!(
+        header(&headers, "content-type"),
+        Some("text/css; charset=utf-8")
+    );
+    let body = format!(
+        "{}{}",
+        String::from_utf8(script).unwrap(),
+        String::from_utf8(style).unwrap()
+    );
     assert!(body.contains("htmx:responseError"), "shell was: {body}");
     assert!(body.contains("htmx:sendError"), "shell was: {body}");
     // The note's class is styled, and it is announced to assistive technology.
@@ -806,7 +833,7 @@ fn meta_route_is_read_only_and_types_its_errors() {
 /// endpoint's default face: sparql-results+json, routed by query form.
 #[test]
 fn sparql_get_executes_with_the_default_json_face() {
-    let query = ikigai_web_server::sparql::urlencode("SELECT ?s WHERE { ?s ?p ?o }");
+    let query = ikigai_fn::html::url_segment("SELECT ?s WHERE { ?s ?p ?o }");
     let (status, headers, body) = get(&format!("/sparql?query={query}"));
     assert_eq!(status, 200);
     assert_eq!(
@@ -826,7 +853,7 @@ fn sparql_get_executes_with_the_default_json_face() {
 /// and every query read the whole default dataset.
 #[test]
 fn sparql_forwards_graph_and_joins_repeats() {
-    let query = ikigai_web_server::sparql::urlencode("SELECT ?s WHERE { ?s ?p ?o }");
+    let query = ikigai_fn::html::url_segment("SELECT ?s WHERE { ?s ?p ?o }");
     // No graph named: nothing forwarded, the endpoint's default dataset.
     let (_, _, body) = get(&format!("/sparql?query={query}"));
     let body = String::from_utf8(body).unwrap();
@@ -874,7 +901,7 @@ fn sparql_forwards_graph_and_joins_repeats() {
 /// for its raw-result links, so a browser never silently widens a query.
 #[test]
 fn sparql_editor_page_keeps_the_graph() {
-    let query = ikigai_web_server::sparql::urlencode("SELECT ?s WHERE { ?s ?p ?o }");
+    let query = ikigai_fn::html::url_segment("SELECT ?s WHERE { ?s ?p ?o }");
     let (status, _, body) = roundtrip(&format!(
         "GET /sparql?query={query}&graph=urn:g:a&graph=urn:g:b HTTP/1.1\r\nHost: t\r\n\
          Accept: text/html\r\n\r\n"
@@ -899,7 +926,7 @@ fn sparql_editor_page_keeps_the_graph() {
 /// `urn:sparql:ask`; CONSTRUCT comes back as Turtle.
 #[test]
 fn sparql_conneg_selects_faces_and_forms_route() {
-    let query = ikigai_web_server::sparql::urlencode("ASK { ?s ?p ?o }");
+    let query = ikigai_fn::html::url_segment("ASK { ?s ?p ?o }");
     let (status, headers, body) = roundtrip(&format!(
         "GET /sparql?query={query} HTTP/1.1\r\nHost: t\r\nAccept: text/csv\r\n\r\n"
     ));
@@ -910,7 +937,7 @@ fn sparql_conneg_selects_faces_and_forms_route() {
     );
     assert_eq!(body, b"true");
 
-    let query = ikigai_web_server::sparql::urlencode("CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }");
+    let query = ikigai_fn::html::url_segment("CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }");
     let (status, headers, body) = get(&format!("/sparql?query={query}"));
     assert_eq!(status, 200);
     assert_eq!(
@@ -924,7 +951,7 @@ fn sparql_conneg_selects_faces_and_forms_route() {
 /// raw-face links depend on this.
 #[test]
 fn sparql_explicit_as_wins_over_accept() {
-    let query = ikigai_web_server::sparql::urlencode("SELECT ?s WHERE { ?s ?p ?o }");
+    let query = ikigai_fn::html::url_segment("SELECT ?s WHERE { ?s ?p ?o }");
     let (status, headers, _) = roundtrip(&format!(
         "GET /sparql?query={query}&as=text/csv HTTP/1.1\r\nHost: t\r\nAccept: text/html\r\n\r\n"
     ));
@@ -952,7 +979,7 @@ fn sparql_post_bodies_carry_the_query() {
         Some("application/sparql-results+json")
     );
 
-    let form = format!("query={}", ikigai_web_server::sparql::urlencode(query));
+    let form = format!("query={}", ikigai_fn::html::url_segment(query));
     let (status, _, body) = roundtrip(&format!(
         "POST /sparql HTTP/1.1\r\nHost: t\r\n\
          Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{form}",
@@ -969,7 +996,7 @@ fn sparql_update_forms_are_refused() {
         "INSERT DATA { <urn:x> <urn:p> 1 }",
         "DELETE WHERE { ?s ?p ?o }",
     ] {
-        let query = ikigai_web_server::sparql::urlencode(update);
+        let query = ikigai_fn::html::url_segment(update);
         let (status, _, body) = get(&format!("/sparql?query={query}"));
         assert_eq!(status, 400);
         let body = String::from_utf8(body).unwrap();
@@ -986,7 +1013,7 @@ fn sparql_update_forms_are_refused() {
 #[test]
 fn sparql_editor_page_prefills_and_renders_results() {
     let query = "SELECT ?s WHERE { ?s ?p ?o } # <tag> & \"quotes\"";
-    let encoded = ikigai_web_server::sparql::urlencode(query);
+    let encoded = ikigai_fn::html::url_segment(query);
     let (status, headers, body) = roundtrip(&format!(
         "GET /sparql?query={encoded} HTTP/1.1\r\nHost: t\r\nAccept: text/html\r\n\r\n"
     ));
@@ -1016,7 +1043,7 @@ fn sparql_editor_page_prefills_and_renders_results() {
         assert!(body.contains(sample.title), "missing: {}", sample.title);
         let href = format!(
             "/sparql?query={}",
-            ikigai_web_server::sparql::urlencode(&sample.query())
+            ikigai_fn::html::url_segment(&sample.query())
         );
         assert!(body.contains(&href), "missing href for: {}", sample.title);
     }
@@ -1034,7 +1061,7 @@ fn sparql_editor_page_handles_empty_and_bad_queries() {
     assert_eq!(status, 200);
     assert!(String::from_utf8(body).unwrap().contains("<textarea"));
 
-    let query = ikigai_web_server::sparql::urlencode("DROP GRAPH <urn:g>");
+    let query = ikigai_fn::html::url_segment("DROP GRAPH <urn:g>");
     let (status, _, body) = roundtrip(&format!(
         "GET /sparql?query={query} HTTP/1.1\r\nHost: t\r\nAccept: text/html\r\n\r\n"
     ));
@@ -1124,7 +1151,7 @@ fn readonly_bind_still_reads() {
         Some("application/sparql-results+json")
     );
     // /sparql stays read-only by its own construction: update forms refuse.
-    let update = ikigai_web_server::sparql::urlencode("INSERT DATA { <urn:x> <urn:p> 1 }");
+    let update = ikigai_fn::html::url_segment("INSERT DATA { <urn:x> <urn:p> 1 }");
     let (status, _, _) = roundtrip_at(
         addr,
         &format!("GET /sparql?query={update} HTTP/1.1\r\nHost: t\r\n\r\n"),
@@ -1137,20 +1164,29 @@ fn readonly_bind_still_reads() {
 /// and on loopback stays byte-identical to what it always served.
 #[test]
 fn readonly_shell_hides_the_annotate_form_loopback_does_not() {
-    const HIDE: &str = ".browse-annotate{display:none}";
+    // The rule lives in the shell's style sheet (no inline style under the page policy) and
+    // applies only under a `readonly` body, which only the read-only posture writes.
+    const HIDE: &str = ".readonly .browse-annotate{display:none}";
+    const READONLY: &str = "<body class=\"readonly\">";
+    let (_, _, style) = roundtrip_at(
+        readonly_addr(),
+        "GET /browse.css HTTP/1.1\r\nHost: t\r\n\r\n",
+    );
+    assert!(String::from_utf8(style).unwrap().contains(HIDE));
     let (status, _, body) = roundtrip_at(
         readonly_addr(),
         "GET /browse/urn:repo:demo:tree HTTP/1.1\r\nHost: t\r\n\r\n",
     );
     assert_eq!(status, 200);
     assert!(
-        String::from_utf8(body).unwrap().contains(HIDE),
+        String::from_utf8(body).unwrap().contains(READONLY),
         "read-only shell must hide the annotate form"
     );
     let (_, _, body) = get("/browse/urn:repo:demo:tree");
+    let body = String::from_utf8(body).unwrap();
     assert!(
-        !String::from_utf8(body).unwrap().contains(HIDE),
-        "loopback shell must not hide the annotate form"
+        !body.contains(READONLY) && body.contains("<body>"),
+        "loopback shell must not hide the annotate form: {body}"
     );
 }
 
