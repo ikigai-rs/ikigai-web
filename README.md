@@ -47,6 +47,35 @@ from the socket actually bound, inside `serve` itself; the startup line states
 it. The browse shell also stops offering the annotate form off loopback
 (presentation — the gate is the boundary).
 
+### The door: other origins, and what it relays
+
+A bind and a ceiling say nothing about a web page on ANOTHER site that points the
+owner's browser at this server. Two rules close that, both from the ecosystem's one
+implementation of them (the cli's `ikigai-web` library, ledger #1795/#1813):
+
+- **A write another origin started is refused** before any route: every method but
+  GET, HEAD and OPTIONS goes through the library's `OriginCheck`. A present `Origin`
+  must be this door's own (from the bound address: `http://127.0.0.1:{port}` and
+  `http://localhost:{port}` on loopback, the address itself elsewhere); with no
+  `Origin`, `Sec-Fetch-Site` must say `same-origin` or `none`; with neither, the write
+  is admitted only when it carries no cookie and no browser-replayed `Authorization`,
+  so `curl` and a script holding a bearer token keep working. A refusal is a 403
+  naming the rule. Before this, any page on any site could post to the annotation
+  Sink on the loopback posture, where every request is root.
+- **What this server relays cannot run script as this origin.** Every representation
+  a mount answers (and every refusal) is served under the page policy plus `sandbox`,
+  so a page planted in a mounted, writable file jail (ikigai-fs answers `text/html`
+  for `.html`, and SVG runs script too) still renders when navigated to, but in an
+  opaque origin with no script. This server's own three pages (`/`, `/browse/…`,
+  `/sparql`) carry the strict page policy (`HTML_DOOR_CSP`: no inline script or style,
+  nothing from another origin, no framing) with `nosniff`, `Referrer-Policy:
+  no-referrer` and `Cross-Origin-Opener-Policy: same-origin`, and load their style and
+  script as files (`/browse.css`, `/shell.js`, `/sparql.css`, `/sparql.js`).
+
+The sandbox governs a NAVIGATION. The browse shell FETCHES a face and swaps its markup
+into itself, where the page's own policy applies instead, and htmx runs no script that
+arrives in a swap (`allowScriptTags:false`).
+
 ### The ceiling
 
 Read-only is not safe on its own. This face composes the config home's generic
@@ -200,8 +229,8 @@ content-negotiated:
   syntax-highlighted, results as a table below (SELECT; `urn:*` IRIs link back
   into this server), a boolean (ASK) or Turtle (CONSTRUCT/DESCRIBE), and the
   eight sample queries from the review layer as sidebar links that fill the
-  editor on click. Entirely same-origin: the editor is a small inline highlight
-  overlay, not a vendored bundle — no external requests, ever.
+  editor on click. Entirely same-origin: the editor is a small highlight
+  overlay (`/sparql.js`, `/sparql.css`), not a vendored bundle — no external requests, ever.
 - **anything else** — the raw result: `application/sparql-results+json` by
   default; `text/csv`, `text/tab-separated-values`, `+xml`, `text/turtle` via
   `Accept` or an explicit `?as=` (which wins). A protocol-ish endpoint other

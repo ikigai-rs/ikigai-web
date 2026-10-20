@@ -11,7 +11,7 @@
 # entry. Renaming the package alone kept the running daemon, the supervision and
 # the re-registration untouched.
 name = "ikigai-web-server"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 description = "Browse an ikigai kernel from a web browser: an HTTP face over a kernel composed from the machine's normal config-home mounts. Loopback by default (GET→Source, HEAD→Exists, GET /meta/{iri}→Meta, one POST route: annotation minting); a non-loopback bind (web.bind/--bind) serves read-only — the write surface is disabled, not gated — and requires a capability ceiling (web.cap/--cap) that every request on every route is issued under. Accept↔conneg; typed errors→status codes. Plus /sparql: a read-only, content-negotiated SPARQL face with a same-origin editor page."
 license = "MIT OR Apache-2.0"
@@ -48,7 +48,12 @@ repository = "https://github.com/ikigai-rs/ikigai-web"
 # ★ 0.1.80 is the floor for `Error::Conflict` (the 409 in `serve::status_of`), the
 # first release with that variant. The caret is also a CEILING: `^0.1.80` admits
 # `<0.2.0`, so a 0.2 core is a deliberate move, never a silent one.
-ikigai-core = "0.1.80"
+#
+# ★ 2026-10-19 moved it to 0.1.108, and not for anything this crate calls: the door
+# library below (`ikigai-web` 0.1.66) requires `^0.1.108`, and cargo unifies core to
+# one version for the whole graph, so a lower floor here would state a build that
+# cannot exist (ledger #1795).
+ikigai-core = "0.1.108"
 # RemoteSpace/MountedRemote — the Resolver→Space adapters that let this process
 # compose the machine's peers (gonk, on a typical machine) behind IRI prefixes.
 ikigai-resolve = "0.1.30"
@@ -63,6 +68,18 @@ ikigai-ipc = "0.1.30"
 # 2026-09-10. Its only dependency beyond core is serde_json, already in the
 # graph, so the canonical renderer costs this face nothing.
 ikigai-vocab = "0.1.68"
+# The door's two rules, from their ONE implementation in the ecosystem (ledger #1813):
+# `OriginCheck` (refuse a write another origin started) and `SecurityHeaders::html_door`
+# / `HTML_DOOR_CSP` (the page policy). This is the cli's inbound-HTTP transport library,
+# which owns the crates.io name `ikigai-web`; THIS crate is `ikigai-web-server` (see the
+# rename note above). It parses HTTP itself, so it calls `OriginCheck::check` through an
+# adapter (`serve::origin_refusal`) rather than adopting the library's edge. 0.1.66 is the
+# first release with `OriginCheck` and `html_door`. A CEILING too: `^0.1.66` is `<0.2.0`.
+ikigai-web = "0.1.66"
+# `ikigai_fn::html`: the ecosystem's one HTML escaper and URL-segment encoder (ledger
+# #1813, FND-H), in place of the private `html_escape` and `urlencode` this crate used to
+# carry. 0.5.0 is the first release with the `html` module. A CEILING: `^0.5.0` is `<0.6.0`.
+ikigai-fn = "0.5.0"
 # The accept loop + per-connection tasks. Multi-thread because the forwarding
 # endpoints round-trip the wire SYNCHRONOUSLY (ikigai-resolve), each in-flight
 # request parks a worker thread.

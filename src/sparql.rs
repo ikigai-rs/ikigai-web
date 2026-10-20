@@ -8,7 +8,9 @@
 //! - `text/html` → the editor page: query prefilled and syntax-highlighted,
 //!   results rendered as a table below, the sample queries as sidebar links
 //!   that fill the editor on click. Entirely same-origin: the highlighter is a
-//!   small inline overlay (a `<pre>` behind a transparent-text `<textarea>`),
+//!   small overlay (a `<pre>` behind a transparent-text `<textarea>`, its
+//!   script and style served as `/sparql.js` and `/sparql.css` so the page
+//!   policy needs no inline exception),
 //!   not a vendored editor — YASGUI/YASQE's dist is ~1MB of minified JS, an
 //!   order of magnitude more un-auditable code than this whole server, so v1
 //!   takes the textarea. No external requests, ever.
@@ -30,7 +32,9 @@
 
 use ikigai_core::{ArgRef, Iri, Request, Verb};
 
-use crate::serve::{error_resp, html_escape, source_resp, status_of, Face, HttpRequest, Resp};
+use ikigai_fn::html::{attr, html_text, url_segment};
+
+use crate::serve::{error_resp, page_resp, source_resp, status_of, Face, HttpRequest, Resp};
 
 /// Dispatch `/sparql`. GET executes `?query=`; POST takes the query from a
 /// form body (`query=` field) or a raw body (`application/sparql-query`, or
@@ -380,22 +384,6 @@ pub fn samples() -> &'static [Sample] {
     SAMPLES
 }
 
-/// Percent-encode a query-string VALUE: unreserved characters pass, everything
-/// else (including `&`, `=`, `+`, newlines) encodes per byte — so a sidebar
-/// href round-trips the sample byte-exactly through [`crate::serve`]'s decoder.
-pub fn urlencode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for byte in s.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                out.push(byte as char)
-            }
-            other => out.push_str(&format!("%{other:02X}")),
-        }
-    }
-    out
-}
-
 // ---------------------------------------------------------------------------
 // The editor page (the text/html face).
 // ---------------------------------------------------------------------------
@@ -424,8 +412,8 @@ async fn editor_page(face: &Face, query: Option<&str>, graphs: &[String]) -> Res
                         let text = String::from_utf8_lossy(&repr.bytes);
                         match form {
                             "select" => tsv_table(&text),
-                            "ask" => format!("<p class=\"ask\">{}</p>", html_escape(text.trim())),
-                            _ => format!("<pre class=\"turtle\">{}</pre>", html_escape(&text)),
+                            "ask" => format!("<p class=\"ask\">{}</p>", html_text(text.trim())),
+                            _ => format!("<pre class=\"turtle\">{}</pre>", html_text(&text)),
                         }
                     }
                 }
@@ -436,9 +424,9 @@ async fn editor_page(face: &Face, query: Option<&str>, graphs: &[String]) -> Res
     for sample in samples() {
         sidebar.push_str(&format!(
             "<li><a href=\"/sparql?query={}\"><strong>{}</strong><small>{}</small></a></li>\n",
-            urlencode(&sample.query()),
-            html_escape(sample.title),
-            html_escape(sample.blurb),
+            url_segment(&sample.query()),
+            html_text(sample.title),
+            html_text(sample.blurb),
         ));
     }
     // A real prefill, not a placeholder: ghost text looks like a default query
@@ -447,30 +435,30 @@ async fn editor_page(face: &Face, query: Option<&str>, graphs: &[String]) -> Res
     // The HTML parser eats one newline right after <textarea>; re-add it so a
     // query that genuinely starts with a blank line survives the round trip.
     let textarea = if query_text.starts_with('\n') {
-        format!("\n{}", html_escape(query_text))
+        format!("\n{}", html_text(query_text))
     } else {
-        html_escape(query_text)
+        html_text(query_text)
     };
     // The narrowing travels with the page: into the raw-result links, and as
     // hidden fields so the next Run reads the same graphs rather than silently
     // widening to the default dataset.
     let graph_params: String = graphs
         .iter()
-        .map(|g| format!("&amp;graph={}", urlencode(g)))
+        .map(|g| format!("&amp;graph={}", url_segment(g)))
         .collect();
     let graph_fields: String = graphs
         .iter()
         .map(|g| {
             format!(
                 "<input type=\"hidden\" name=\"graph\" value=\"{}\">",
-                html_escape(g)
+                attr(g)
             )
         })
         .collect();
     let faces = if query_text.trim().is_empty() {
         String::new()
     } else {
-        let encoded = urlencode(query_text);
+        let encoded = url_segment(query_text);
         format!(
             "<span class=\"faces\">raw: \
              <a href=\"/sparql?query={encoded}{graph_params}&amp;as=application/sparql-results%2Bjson\">JSON</a> \
@@ -480,7 +468,8 @@ async fn editor_page(face: &Face, query: Option<&str>, graphs: &[String]) -> Res
     let body = format!(
         "<!doctype html><html><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-         <title>SPARQL \u{2014} ikigai</title><style>{SPARQL_CSS}</style></head><body>\
+         <title>SPARQL \u{2014} ikigai</title>\
+         <link rel=\"stylesheet\" href=\"/sparql.css\"></head><body>\
          <header><h1>SPARQL</h1>\
          <p>Query the machine's shared RDF store \u{2014} read-only \
          (SELECT, ASK, CONSTRUCT, DESCRIBE). <a href=\"/\">catalog</a></p></header>\
@@ -495,24 +484,13 @@ async fn editor_page(face: &Face, query: Option<&str>, graphs: &[String]) -> Res
          <p class=\"aside-note\">The review layer, queried \u{2014} click to load.</p>\
          <ul class=\"samples\">\n{sidebar}</ul></aside>\
          </div>\
-         <script>{EDITOR_JS}</script></body></html>\n"
+         <script src=\"/sparql.js\"></script></body></html>\n"
     );
-    Resp {
-        status: 200,
-        headers: vec![
-            (
-                "Content-Type".to_string(),
-                "text/html; charset=utf-8".to_string(),
-            ),
-            ("Cache-Control".to_string(), "no-store".to_string()),
-        ],
-        body: body.into_bytes(),
-        suppress_body: false,
-    }
+    page_resp(body)
 }
 
 fn error_box(reason: &str) -> String {
-    format!("<div class=\"error\">{}</div>", html_escape(reason))
+    format!("<div class=\"error\">{}</div>", html_text(reason))
 }
 
 /// Render SPARQL TSV results as an HTML table. The TSV format (SPARQL 1.1
@@ -528,7 +506,7 @@ fn tsv_table(tsv: &str) -> String {
     for var in header.split('\t') {
         out.push_str(&format!(
             "<th>{}</th>",
-            html_escape(var.trim_start_matches('?'))
+            html_text(var.trim_start_matches('?'))
         ));
     }
     out.push_str("</tr></thead><tbody>");
@@ -559,22 +537,22 @@ fn term_html(term: &str) -> String {
         return if iri.starts_with("urn:") {
             format!(
                 "<a href=\"/{}\"><code>{}</code></a>",
-                html_escape(iri),
-                html_escape(iri)
+                attr(iri),
+                html_text(iri)
             )
         } else {
-            format!("<code>{}</code>", html_escape(iri))
+            format!("<code>{}</code>", html_text(iri))
         };
     }
     if term.starts_with('"') {
         let (content, suffix) = split_literal(term);
-        let mut cell = html_escape(&unescape_tsv(content));
+        let mut cell = html_text(&unescape_tsv(content));
         if !suffix.is_empty() {
-            cell.push_str(&format!(" <small>{}</small>", html_escape(suffix)));
+            cell.push_str(&format!(" <small>{}</small>", html_text(suffix)));
         }
         return cell;
     }
-    html_escape(term)
+    html_text(term)
 }
 
 /// Split `"content"@lang` / `"content"^^<dt>` into (content, suffix). The
@@ -632,7 +610,7 @@ fn unescape_tsv(s: &str) -> String {
 
 /// The page style — same posture as the browse shell: responsive, legible in
 /// light and dark, no external anything.
-const SPARQL_CSS: &str = "\
+pub(crate) const SPARQL_CSS: &str = "\
  :root{color-scheme:light dark}\
  body{margin:0;font:15px/1.5 -apple-system,system-ui,sans-serif;\
    max-width:75rem;padding:1rem;margin-inline:auto}\
@@ -688,7 +666,7 @@ const SPARQL_CSS: &str = "\
 /// (comments, strings, IRIs, variables, keywords), keep scroll in sync, and
 /// submit on Cmd/Ctrl+Enter. This IS the "editor" — 30 lines instead of a
 /// vendored megabyte.
-const EDITOR_JS: &str = "\
+pub(crate) const EDITOR_JS: &str = "\
  (function(){\
  var q=document.getElementById('q'),hl=document.getElementById('hl');\
  var KW='SELECT|ASK|CONSTRUCT|DESCRIBE|WHERE|PREFIX|BASE|FILTER|OPTIONAL|UNION|MINUS|GRAPH|SERVICE|ORDER|GROUP|BY|HAVING|LIMIT|OFFSET|DISTINCT|REDUCED|AS|BIND|VALUES|NOT|EXISTS|IN|FROM|NAMED|COUNT|SUM|AVG|MIN|MAX|SAMPLE|GROUP_CONCAT|STR|CONTAINS|REGEX|LANG|DATATYPE|BOUND|IRI|URI|BNODE|CONCAT|UCASE|LCASE|STRSTARTS|STRENDS|YEAR|MONTH|DAY|NOW|COALESCE|IF|true|false|a';\
@@ -776,9 +754,9 @@ mod tests {
     }
 
     #[test]
-    fn urlencode_round_trips_through_the_query_decoder() {
+    fn the_shared_encoder_round_trips_through_the_query_decoder() {
         for sample in samples() {
-            let encoded = urlencode(&sample.query());
+            let encoded = url_segment(&sample.query());
             assert_eq!(
                 crate::serve::percent_decode(&encoded, true).as_deref(),
                 Some(sample.query().as_str()),
@@ -787,7 +765,7 @@ mod tests {
             );
         }
         // `+` must encode (the decoder reads bare `+` as space in query context).
-        assert_eq!(urlencode("a+b c"), "a%2Bb%20c");
+        assert_eq!(url_segment("a+b c"), "a%2Bb%20c");
     }
 
     #[test]
