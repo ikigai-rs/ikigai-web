@@ -344,15 +344,18 @@ two kernels built from the *same* endpoints: in-process, and through
   manifold, not a list of names.
 - **Enforcement crosses.** A declared scope is refused at the peer under a
   capability that lacks it, and the refused write lands nothing.
-- **Golden threads do not cross.** A representation that is cacheable *and*
-  threaded in-process arrives without the peer's threads: thread sets are
-  `#[serde(skip)]` and kernel-local. This is exactly why the ETag here is
-  content-derived rather than thread-derived. The suite says so: over the
-  mount, `demo-roster` carries only the thread the LOCAL kernel hangs on its
-  own name, and conformance 0.5's purity rule ("no thread but its own name")
-  reports it as the one finding the mount adds. That local thread is cut by a
-  write made through this kernel, never by anything the peer does; the test
-  pins the finding and the mechanism beside it.
+- **A mount holds every peer answer uncacheable.** Thread sets are
+  `#[serde(skip)]` and kernel-local, so a peer's golden threads never cross,
+  and the cuts that matter happen on the peer, where this kernel cannot see
+  them. So since ikigai-resolve 0.1.64 a mounted answer arrives `Always` on this
+  side, whatever the peer said: every mounted read is one round trip to the
+  peer's own cache, which keeps the threads and is cut by the peer's writes and
+  watchers (up to 0.1.63 the peer's `Never` crossed, and this kernel served a
+  stale answer after the peer had cut it). The suite says so: over the mount,
+  `demo-upper` and `demo-roster` are reported declared-cacheable but returned
+  uncacheable, and `demo-upper`'s purity declaration goes unconsulted; the test
+  pins those three findings and the mechanism beside them. This is also why
+  the ETag here is content-derived rather than thread-derived.
 - **A peer with no Meta renderer has no contract.** `describe` over a mount is a
   `Verb::Meta` round-trip, and it is best-effort: a peer that cannot render one
   answers, and every mounted endpoint collapses to one anonymous, action-less
