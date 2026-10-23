@@ -16,8 +16,9 @@
 //! - `mounts::compose(["override urn:demo:=<socket>"])` over a real
 //!   [`ikigai_ipc::serve`] peer serving that same kernel.
 //!
-//! The delta between the two reports is what the mount costs, and it is exactly one finding:
-//! [`the_mount_costs_exactly_the_golden_threads`] pins it, and the mechanism beside it by hand.
+//! The delta between the two reports is what the mount costs, and it is exactly the cache:
+//! [`a_mount_holds_every_peer_answer_uncacheable`] pins the findings that says so, and the
+//! mechanism beside them by hand.
 //!
 //! ## The fixture module
 //!
@@ -407,30 +408,35 @@ fn the_fixture_module_conforms_in_process() {
     );
 }
 
-/// ★ **The mount costs exactly the golden threads, and the suite names it.** The same
-/// endpoints, the same suite, through `compose` over a live IPC peer. `demo-roster`'s
-/// in-process representation is cacheable and hangs from [`ROSTER_THREAD`]; over the wire
-/// that thread is gone, because `Representation::threads` is `#[serde(skip)]` and does not
-/// cross. That is the standing hole this crate's ETag design was built around (see the crate
-/// docs: the validator is content-derived precisely because "thread sets are `#[serde(skip)]`
-/// and kernel-local, so they do not cross a wire mount").
+/// ★ **A mount holds every peer answer uncacheable, and the suite names it.** The same
+/// endpoints, the same suite, through `compose` over a live IPC peer. In-process,
+/// `demo-upper` and `demo-roster` are cacheable, and `demo-roster` hangs from
+/// [`ROSTER_THREAD`]. Over the mount, both arrive [`Expiry::Always`]: since ikigai-resolve
+/// 0.1.64 (ikigai-rs/ikigai-cli PR 513, ledger #92) `ForwardingEndpoint` rewrites every
+/// forwarded answer's expiry to `Always` on the MOUNTING side, whatever the peer said.
 ///
-/// The walk's view of it has moved three times. Up to core 0.1.72 the suite named it
-/// ("cacheable with an empty golden-thread set"). Core 0.1.73 (hole A, ledger #512) made the
-/// kernel hang every cacheable Source/Exists answer from its own canonical target, so the
-/// mounted representation arrives with ONE thread, `urn:demo:roster`, the local name; the set
-/// was no longer empty and conformance up to 0.4 reported the mount clean. Conformance 0.5
-/// (ledger #549) respelled the purity rule as "no thread but its own name", which is exactly
-/// what crosses, so the suite names it again: ONE `CACHEABLE` finding on `demo-roster`, over
-/// the mount only. The in-process control stays clean, so the finding is the mount's.
+/// The reason is the hole this test used to pin as a finding. Thread sets are
+/// `#[serde(skip)]` and do not cross a wire, and even carried names would not help: a thread
+/// this kernel holds is cut only by what happens HERE, while the cuts that matter (a watcher,
+/// `urn:kernel:cut`, a write by another route) happen on the PEER. Up to resolve 0.1.63 the
+/// peer's `Never` crossed verbatim, so this kernel cached `demo-roster` hanging only from its
+/// own local name and served the old roster after the peer had cut `ROSTER_THREAD`, for as
+/// long as the process lived. Now every mounted read is one round trip to the peer's cache,
+/// which keeps the threads and is cut by the peer's own writes and watchers.
 ///
-/// **That finding is the point of this test, so it is pinned, not waived.** The local target
-/// thread is cut by a Sink or Delete made THROUGH this kernel on that name. It is not cut by
-/// anything the peer does: a cut of `ROSTER_THREAD` on the peer, or a write that reaches the
-/// peer by another route, leaves this kernel serving the old roster until something local
-/// cuts it. The pins after the report are the same statement as a mechanism.
+/// So the delta is no longer "the threads" but "the cache", and the walk says so with three
+/// findings, over the mount only (the in-process control stays clean, so they are the
+/// mount's): `CACHEABLE` on `demo-upper` and on `demo-roster` (declared cacheable, returned
+/// uncacheable), and `DECLARATIONS` on `demo-upper` (declared pure, but no cacheable answer
+/// came back for the purity rule to apply to). The suite stays the same on both kernels on
+/// purpose: a difference in the reports is a difference in the KERNEL.
+///
+/// **Those findings are the point of this test, so they are pinned, not waived.** A peer
+/// release that let a mounted answer cache again without its cuts crossing would bring the
+/// stale-roster hole back, and this test fails by name when it does. A mounted read that is
+/// cached here AND fresh needs the peer's cuts to cross the wire, which is not built.
 #[test]
-fn the_mount_costs_exactly_the_golden_threads() {
+fn a_mount_holds_every_peer_answer_uncacheable() {
     let ledger: Ledger = Arc::default();
     let in_process = suite().run_blocking(&peer_kernel(Arc::clone(&ledger)));
     let mounted = mounted("override");
@@ -440,16 +446,21 @@ fn the_mount_costs_exactly_the_golden_threads() {
     assert!(in_process.is_clean(), "control:\n{in_process}");
     assert_eq!(
         finding_keys(&over_the_wire),
-        BTreeSet::from(["demo-roster Cacheable".to_string()]),
-        "the mount costs the peer's thread and nothing else, and the walk says so:\n{over_the_wire}"
+        BTreeSet::from([
+            "demo-roster Cacheable".to_string(),
+            "demo-upper Cacheable".to_string(),
+            "demo-upper Declarations".to_string(),
+        ]),
+        "the mount costs the cache and nothing else, and the walk says so:\n{over_the_wire}"
     );
     // The same walk, same counts: composition hides no endpoint and skips no check.
     assert_eq!(over_the_wire.endpoints, in_process.endpoints);
     assert_eq!(over_the_wire.actions, in_process.actions);
     assert_eq!(over_the_wire.checks.skipped().count(), 0);
 
-    // The mechanism, by hand: the representation is still marked cacheable, the peer's
-    // declared thread is gone, and what remains is the thread the LOCAL kernel added.
+    // The mechanism, by hand: in-process the answer is cacheable and threaded; through the
+    // mount the same bytes arrive uncacheable, so this kernel stores nothing a peer's cut
+    // would have to reach.
     let threads_of = |repr: &Representation| -> BTreeSet<String> {
         repr.threads().iter().map(|t| t.to_string()).collect()
     };
@@ -472,11 +483,27 @@ fn the_mount_costs_exactly_the_golden_threads() {
     )
     .expect("over the mount");
     assert_eq!(through.bytes, direct.bytes, "the same bytes cross");
-    assert_eq!(through.expiry, Expiry::Never, "the expiry crosses");
+    assert_eq!(
+        through.expiry,
+        Expiry::Always,
+        "a mount never caches a peer's answer (ledger #92)"
+    );
     assert_eq!(
         threads_of(&through),
-        BTreeSet::from(["urn:demo:roster".to_string()]),
-        "the declared thread does not cross; only the local target thread remains"
+        BTreeSet::new(),
+        "an uncacheable answer hangs from no thread: there is nothing here to cut"
+    );
+    let upper = issue(
+        &mounted.kernel,
+        request(Verb::Source, "urn:demo:upper", &[("in", "ada")]),
+        &Capability::root(),
+    )
+    .expect("over the mount");
+    assert_eq!(text(&upper), "ADA");
+    assert_eq!(
+        upper.expiry,
+        Expiry::Always,
+        "even a pure peer answer is uncacheable here"
     );
 }
 
@@ -724,7 +751,8 @@ fn dropping_a_required_input_is_a_typed_refusal_through_the_mount() {
 ///    two annotation roots, not a deny-list — which is the argument for allow-lists.
 ///
 /// What the alias does NOT cost: the module's own findings are identical to the override
-/// mount's (the one thread erasure [`the_mount_costs_exactly_the_golden_threads`] pins), and
+/// mount's (the uncacheable mounted answers [`a_mount_holds_every_peer_answer_uncacheable`]
+/// pins), and
 /// the local names resolve.
 #[test]
 fn an_alias_mount_re_prefixes_the_peers_kernel_operations_too() {

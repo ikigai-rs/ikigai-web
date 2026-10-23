@@ -56,7 +56,13 @@ repository = "https://github.com/ikigai-rs/ikigai-web"
 ikigai-core = "0.1.108"
 # RemoteSpace/MountedRemote — the Resolver→Space adapters that let this process
 # compose the machine's peers (gonk, on a typical machine) behind IRI prefixes.
-ikigai-resolve = "0.1.30"
+#
+# ★ 2026-10-23 moved it to 0.1.64: the first release where a mount never caches a peer's
+# answer (`ForwardingEndpoint` rewrites the expiry to `Always`, ikigai-rs/ikigai-cli PR 513,
+# ledger #92). Below it this server cached a mounted answer hanging only from a local
+# thread that no cut on the peer reaches, and served it stale for as long as it ran
+# (`tests/conformance.rs` `a_mount_holds_every_peer_answer_uncacheable` pins the fix).
+ikigai-resolve = "0.1.64"
 # The IPC client transport: dial a Unix-socket peer (wire hello). Above the old
 # 0.1.13 floor, which was already the true minimum for its own reason: below it
 # a resolver never redials, so a peer restart left this process's mounted
