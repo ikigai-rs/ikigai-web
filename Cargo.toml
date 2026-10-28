@@ -11,7 +11,7 @@
 # entry. Renaming the package alone kept the running daemon, the supervision and
 # the re-registration untouched.
 name = "ikigai-web-server"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 description = "Browse an ikigai kernel from a web browser: an HTTP face over a kernel composed from the machine's normal config-home mounts. Loopback by default (GET→Source, HEAD→Exists, GET /meta/{iri}→Meta, one POST route: annotation minting); a non-loopback bind (web.bind/--bind) serves read-only — the write surface is disabled, not gated — and requires a capability ceiling (web.cap/--cap) that every request on every route is issued under. Accept↔conneg; typed errors→status codes. Plus /sparql: a read-only, content-negotiated SPARQL face with a same-origin editor page."
 license = "MIT OR Apache-2.0"
@@ -53,7 +53,13 @@ repository = "https://github.com/ikigai-rs/ikigai-web"
 # library below (`ikigai-web` 0.1.66) requires `^0.1.108`, and cargo unifies core to
 # one version for the whole graph, so a lower floor here would state a build that
 # cannot exist (ledger #1795).
-ikigai-core = "0.1.108"
+#
+# ★ 2026-10-27 moved it to 0.2.0, the streams release (ledger #2261), the ecosystem's
+# deliberate 0.2 move (core 0.2.0 sweep, wave 7, ledger #2362). The old `0.1.108` pin meant
+# `<0.2.0` under 0.x rules, so it could never reach this core. "0.2.0" is a caret floor that
+# admits every 0.2.x, and a CEILING again: `<0.3.0`. Core's types are in this crate's API,
+# so the move is this crate's 0.6.0.
+ikigai-core = "0.2.0"
 # RemoteSpace/MountedRemote — the Resolver→Space adapters that let this process
 # compose the machine's peers (gonk, on a typical machine) behind IRI prefixes.
 #
@@ -62,18 +68,26 @@ ikigai-core = "0.1.108"
 # ledger #92). Below it this server cached a mounted answer hanging only from a local
 # thread that no cut on the peer reaches, and served it stale for as long as it ran
 # (`tests/conformance.rs` `a_mount_holds_every_peer_answer_uncacheable` pins the fix).
-ikigai-resolve = "0.1.64"
+#
+# ★ 2026-10-27 moved it to 0.2.1, its newest release, on core 0.2 (ledger #2261, #2362):
+# a 0.1 resolve links a 0.1 core, and the graph would carry two cores.
+ikigai-resolve = "0.2.1"
 # The IPC client transport: dial a Unix-socket peer (wire hello). Above the old
 # 0.1.13 floor, which was already the true minimum for its own reason: below it
 # a resolver never redials, so a peer restart left this process's mounted
 # namespace dead until the process itself restarted.
-ikigai-ipc = "0.1.30"
+#
+# 2026-10-27 moved it to 0.2.0, its newest release, on core 0.2 (ledger #2261, #2362).
+ikigai-ipc = "0.2.0"
 # `TurtleRenderer` — the Meta renderer `mounts::compose` injects. Core ships
 # none, and a kernel without one cannot render `urn:kernel:catalog`: this
 # server answered 500 on that route (a link its own index emits) until
 # 2026-09-10. Its only dependency beyond core is serde_json, already in the
 # graph, so the canonical renderer costs this face nothing.
-ikigai-vocab = "0.1.68"
+#
+# 2026-10-27 moved it to 0.2.0 with core, the streams release (ledger #2261, #2362): the
+# old `0.1.68` pin meant `<0.2.0` under 0.x rules.
+ikigai-vocab = "0.2.0"
 # The door's two rules, from their ONE implementation in the ecosystem (ledger #1813):
 # `OriginCheck` (refuse a write another origin started) and `SecurityHeaders::html_door`
 # / `HTML_DOOR_CSP` (the page policy). This is the cli's inbound-HTTP transport library,
@@ -81,11 +95,17 @@ ikigai-vocab = "0.1.68"
 # rename note above). It parses HTTP itself, so it calls `OriginCheck::check` through an
 # adapter (`serve::origin_refusal`) rather than adopting the library's edge. 0.1.66 is the
 # first release with `OriginCheck` and `html_door`. A CEILING too: `^0.1.66` is `<0.2.0`.
-ikigai-web = "0.1.66"
+#
+# 2026-10-27 moved it to 0.2.0, its newest release and its first on core 0.2 (ledger
+# #2261, #2362). Still a CEILING: `^0.2.0` is `<0.3.0`.
+ikigai-web = "0.2.0"
 # `ikigai_fn::html`: the ecosystem's one HTML escaper and URL-segment encoder (ledger
 # #1813, FND-H), in place of the private `html_escape` and `urlencode` this crate used to
 # carry. 0.5.0 is the first release with the `html` module. A CEILING: `^0.5.0` is `<0.6.0`.
-ikigai-fn = "0.5.0"
+#
+# 2026-10-27 moved it to 0.7.0, its newest release, on core 0.2 (ledger #2261, #2362), and
+# the one the `ikigai-web` 0.2.0 above requires. A CEILING: `^0.7.0` is `<0.8.0`.
+ikigai-fn = "0.7.0"
 # The accept loop + per-connection tasks. Multi-thread because the forwarding
 # endpoints round-trip the wire SYNCHRONOUSLY (ikigai-resolve), each in-flight
 # request parks a worker thread.
@@ -119,7 +139,10 @@ libc = "0.2"
 # kernel operations reached through an ALIAS mount (`urn:edge:kernel:catalog`; ledger #335),
 # so `an_alias_mount_re_prefixes_the_peers_kernel_operations_too` asserts no core finding
 # leaks, where it used to pin the fourteen that did. On 0.8.0-0.8.3 that test fails.
-ikigai-conformance = "0.8.4"
+#
+# 0.11.0, from 0.8.4 (2026-10-27): the first on core 0.2 (ledger #2261, #2362). It turns
+# on DATATYPES and FAILURES by default.
+ikigai-conformance = "0.11.0"
 # `run_blocking` is the suite's own executor; the by-hand pins need one too.
 # (The peer half of the mount — a real Unix-socket kernel server — is
 # `ikigai-ipc::serve`, already a normal dependency for its client half.)
@@ -129,7 +152,9 @@ tempfile = "3"
 # (`tests/remote_conflict.rs`): a v7 ipc crate cannot join this graph beside
 # 0.1.30 (both are `^0.1`, so cargo unifies them), so the v7 peer is a hello
 # shim in front of a real v8 server. Already in the graph via ikigai-ipc.
-ikigai-wire = "0.1.30"
+#
+# 2026-10-27 moved it to 0.2.0, its newest release, on core 0.2 (ledger #2261, #2362).
+ikigai-wire = "0.2.0"
 
 [[bin]]
 name = "ikigai-web"
