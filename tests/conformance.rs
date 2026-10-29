@@ -45,7 +45,7 @@ use ikigai_core::{
     ActionSpec, ArgRef, ArgSpec, Capability, Description, EndpointSpace, Error, Exact, Expiry,
     Fallback, FnEndpoint, Iri, Kernel, ReprType, Representation, Request, Space, Verb,
 };
-use ikigai_web_server::mounts::{compose, parse_mount_line};
+use ikigai_web_server::mounts::{compose, compose_space, parse_mount_line, MountLine};
 
 /// The XSD datatype every input here carries: the type the wire actually holds.
 const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
@@ -177,14 +177,16 @@ fn ledger_endpoint(ledger: Ledger) -> FnEndpoint {
 /// a single id called `remote`, and a manifold that has lost every ArgSpec looks merely
 /// small rather than broken. A peer without a renderer is a peer without a contract.
 fn peer_kernel(ledger: Ledger) -> Kernel {
+    peer_with_space(ledger).0
+}
+
+fn peer_with_space(ledger: Ledger) -> (Kernel, Arc<dyn Space>) {
     let space = EndpointSpace::new()
         .bind(Exact::new("urn:demo:upper"), upper())
         .bind(Exact::new("urn:demo:roster"), roster())
         .bind(Exact::new("urn:demo:ledger"), ledger_endpoint(ledger));
-    Kernel::with_meta_renderer(
-        Arc::new(Fallback::new(vec![Arc::new(space) as Arc<dyn Space>])),
-        Arc::new(ikigai_vocab::TurtleRenderer),
-    )
+    let space: Arc<dyn Space> = Arc::new(Fallback::new(vec![Arc::new(space)]));
+    (kernel_with_space(Arc::clone(&space)), space)
 }
 
 /// The ids the fixture module binds — the whole catalog on both sides of the wire.
@@ -197,8 +199,9 @@ const FIXTURE_IDS: &[&str] = &["demo-upper", "demo-roster", "demo-ledger"];
 /// the walk drops `content` and fires it once more, and the drop must be refused typed. That
 /// is safe here because the Sink is the side-effect witness, a vector this file owns, and a
 /// refused firing appends nothing (`the_fixture_module_conforms_in_process` counts it).
-fn suite() -> Suite {
+fn suite(space: Arc<dyn Space>) -> Suite {
     Suite::new()
+        .body_space(space)
         .pure("demo-upper")
         .cacheable("demo-upper")
         .cacheable("demo-roster")
@@ -213,6 +216,7 @@ fn suite() -> Suite {
 struct Mounted {
     _dir: tempfile::TempDir,
     kernel: Kernel,
+    space: Arc<dyn Space>,
     /// The ledger the PEER's endpoint writes into (this process holds no endpoint at all).
     ledger: Ledger,
 }
@@ -231,11 +235,13 @@ fn mounted(mode: &str) -> Mounted {
     });
     ready::socket(&socket);
     let line = format!("{mode} urn:demo:={}", socket.display());
-    let kernel = compose(vec![parse_mount_line(&line).expect("a valid mount line")])
-        .unwrap_or_else(|e| panic!("compose `{line}`: {e}"));
+    let (kernel, space) =
+        composed_with_space(vec![parse_mount_line(&line).expect("a valid mount line")])
+            .unwrap_or_else(|e| panic!("compose `{line}`: {e}"));
     Mounted {
         _dir: dir,
         kernel,
+        space,
         ledger,
     }
 }
@@ -243,6 +249,34 @@ fn mounted(mode: &str) -> Mounted {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn kernel_with_space(space: Arc<dyn Space>) -> Kernel {
+    Kernel::with_meta_renderer(space, Arc::new(ikigai_vocab::TurtleRenderer))
+}
+
+fn composed_with_space(lines: Vec<MountLine>) -> Result<(Kernel, Arc<dyn Space>), String> {
+    let space = compose_space(lines)?;
+    Ok((kernel_with_space(Arc::clone(&space)), space))
+}
+
+/// Volatile answers cannot be compared across independent body calls. Any other
+/// unprobed reason (including a missing shared root) is a wiring regression.
+fn assert_body_coverage(report: &Report, expected_volatile: &[&str]) {
+    assert_eq!(report.unprobed.len(), expected_volatile.len(), "{report}");
+    assert_eq!(
+        report
+            .unprobed
+            .iter()
+            .map(|probe| probe.endpoint.as_str())
+            .collect::<BTreeSet<_>>(),
+        expected_volatile.iter().copied().collect::<BTreeSet<_>>(),
+        "{report}"
+    );
+    for probe in report.unprobed.iter() {
+        assert_eq!(probe.check, ikigai_conformance::Check::Bodies, "{report}");
+        assert_eq!(probe.reason, "uncacheable, time-varying, or volatile answer: independent calls cannot establish method agreement (Suite::live, expiry or CACHEABLE's byte comparison)", "{report}");
+    }
+}
 
 fn iri(s: &str) -> Iri {
     Iri::parse(s.to_string()).unwrap_or_else(|e| panic!("`{s}` is a valid IRI: {e}"))
@@ -385,8 +419,9 @@ fn the_composed_kernel_renders_its_own_catalog() {
 #[test]
 fn the_fixture_module_conforms_in_process() {
     let ledger: Ledger = Arc::default();
-    let kernel = peer_kernel(Arc::clone(&ledger));
-    let report = suite().run_blocking(&kernel);
+    let (kernel, space) = peer_with_space(Arc::clone(&ledger));
+    let report = suite(space).run_blocking(&kernel);
+    assert_body_coverage(&report, &["demo-ledger"]);
     eprintln!("--- in-process ---\n{report}");
     assert!(
         report.is_clean(),
@@ -438,10 +473,13 @@ fn the_fixture_module_conforms_in_process() {
 #[test]
 fn a_mount_holds_every_peer_answer_uncacheable() {
     let ledger: Ledger = Arc::default();
-    let in_process = suite().run_blocking(&peer_kernel(Arc::clone(&ledger)));
+    let (kernel, space) = peer_with_space(Arc::clone(&ledger));
+    let in_process = suite(space).run_blocking(&kernel);
+    assert_body_coverage(&in_process, &["demo-ledger"]);
     let mounted = mounted("override");
-    let over_the_wire = suite().run_blocking(&mounted.kernel);
+    let over_the_wire = suite(Arc::clone(&mounted.space)).run_blocking(&mounted.kernel);
     eprintln!("--- over an IPC mount ---\n{over_the_wire}");
+    assert_body_coverage(&over_the_wire, FIXTURE_IDS);
 
     assert!(in_process.is_clean(), "control:\n{in_process}");
     assert_eq!(
@@ -765,7 +803,7 @@ fn an_alias_mount_re_prefixes_the_peers_kernel_operations_too() {
         let _ = ikigai_ipc::serve(served, &path);
     });
     ready::socket(&socket);
-    let kernel = compose(vec![parse_mount_line(&format!(
+    let (kernel, space) = composed_with_space(vec![parse_mount_line(&format!(
         "alias urn:edge:={}",
         socket.display()
     ))
@@ -804,12 +842,15 @@ fn an_alias_mount_re_prefixes_the_peers_kernel_operations_too() {
         ),
         "ADA"
     );
-    let report = suite().run_blocking(&kernel);
+    let report = suite(Arc::clone(&space)).run_blocking(&kernel);
+    assert_body_coverage(&report, FIXTURE_IDS);
     eprintln!("--- over an alias mount ---\n{report}");
     let (mine, core_s): (BTreeSet<String>, BTreeSet<String>) = finding_keys(&report)
         .into_iter()
         .partition(|key| key.starts_with("demo-"));
-    let override_mount = suite().run_blocking(&mounted("override").kernel);
+    let mounted = mounted("override");
+    let override_mount = suite(Arc::clone(&mounted.space)).run_blocking(&mounted.kernel);
+    assert_body_coverage(&override_mount, FIXTURE_IDS);
     assert_eq!(
         mine,
         finding_keys(&override_mount),
@@ -825,8 +866,9 @@ fn an_alias_mount_re_prefixes_the_peers_kernel_operations_too() {
     // `Suite::own` is no longer needed here, and agrees: scoped to `demo-*`, the walk is the
     // same, and there is nothing left for it to name as inherited, because the suite never
     // reached core's operations to begin with.
-    let scoped = suite().own("demo-*").run_blocking(&kernel);
+    let scoped = suite(space).own("demo-*").run_blocking(&kernel);
     eprintln!("--- over an alias mount, own(demo-*) ---\n{scoped}");
+    assert_body_coverage(&scoped, FIXTURE_IDS);
     assert_eq!(
         finding_keys(&scoped),
         mine,

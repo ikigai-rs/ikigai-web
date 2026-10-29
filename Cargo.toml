@@ -142,7 +142,10 @@ libc = "0.2"
 #
 # 0.11.0, from 0.8.4 (2026-10-27): the first on core 0.2 (ledger #2261, #2362). It turns
 # on DATATYPES and FAILURES by default.
-ikigai-conformance = "0.11.0"
+#
+# 0.12.0 adds BODIES and BODY-INPUTS by default. The suite retains each kernel's
+# shared root to probe body methods; the library's core floor stays at 0.2.0.
+ikigai-conformance = "0.12.0"
 # `run_blocking` is the suite's own executor; the by-hand pins need one too.
 # (The peer half of the mount — a real Unix-socket kernel server — is
 # `ikigai-ipc::serve`, already a normal dependency for its client half.)

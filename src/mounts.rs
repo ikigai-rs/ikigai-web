@@ -115,6 +115,39 @@ fn expand_home(path: &str) -> String {
 /// local space closes the chain. Alias and override targets connect NOW and a
 /// refusal is a startup error; prefer targets connect on first use.
 pub fn compose(lines: Vec<MountLine>) -> Result<Kernel, String> {
+    // ★ THE META RENDERER IS NOT OPTIONAL FOR A HOST THAT SERVES A CATALOG.
+    //
+    // Core injects none: `Kernel::new` leaves `meta` unset, and every path that
+    // has to RENDER a description then fails with the same flat
+    // `endpoint error: no Meta renderer configured`. `urn:kernel:catalog` is
+    // one of those paths — it renders every bound endpoint's `describe()` into
+    // one Turtle graph through the renderer — so a catalog-less kernel is what
+    // this server shipped: `GET /urn:kernel:catalog` answered **500** on the
+    // live daemon, on a link its own index page emits (`serve::index` lists
+    // every `kernel.entries()` row, kernel operations included).
+    //
+    // Nothing caught it because nothing here ever asked. The HTTP face maps GET
+    // to `Source` and HEAD to `Exists` and never issues `Verb::Meta`, the tests'
+    // kernels were built by the tests rather than by `compose`, and
+    // `Kernel::describe()` reads `Endpoint::describe()` directly and needs no
+    // renderer at all — so the catalog was the ONE reachable caller, and it is
+    // the one a machine reads. Found 2026-09-10 while adopting
+    // `ikigai-conformance`, by walking the kernel this function returns.
+    //
+    // `ikigai-vocab::TurtleRenderer` is the canonical projection (Turtle,
+    // text/plain, and the `application/json` face a client engine reads to route
+    // named arguments), the same renderer the CLI hosts mount.
+    Ok(Kernel::with_meta_renderer(
+        compose_space(lines)?,
+        Arc::new(TurtleRenderer),
+    ))
+}
+
+/// Build the shared root space used by [`compose`].
+///
+/// Hosts that inspect endpoint body methods can retain this same root for their
+/// probes and construct a kernel with [`TurtleRenderer`], as `compose` does.
+pub fn compose_space(lines: Vec<MountLine>) -> Result<Arc<dyn Space>, String> {
     let mut fronting: Vec<(String, Arc<dyn Resolver>)> = Vec::new();
     let mut aliases: Vec<Arc<dyn Space>> = Vec::new();
     for line in lines {
@@ -155,32 +188,7 @@ pub fn compose(lines: Vec<MountLine>) -> Result<Kernel, String> {
     ordered.extend(aliases);
     // The empty local space — this process serves its mounts and nothing else.
     ordered.push(Arc::new(ikigai_core::EndpointSpace::new()));
-    // ★ THE META RENDERER IS NOT OPTIONAL FOR A HOST THAT SERVES A CATALOG.
-    //
-    // Core injects none: `Kernel::new` leaves `meta` unset, and every path that
-    // has to RENDER a description then fails with the same flat
-    // `endpoint error: no Meta renderer configured`. `urn:kernel:catalog` is
-    // one of those paths — it renders every bound endpoint's `describe()` into
-    // one Turtle graph through the renderer — so a catalog-less kernel is what
-    // this server shipped: `GET /urn:kernel:catalog` answered **500** on the
-    // live daemon, on a link its own index page emits (`serve::index` lists
-    // every `kernel.entries()` row, kernel operations included).
-    //
-    // Nothing caught it because nothing here ever asked. The HTTP face maps GET
-    // to `Source` and HEAD to `Exists` and never issues `Verb::Meta`, the tests'
-    // kernels were built by the tests rather than by `compose`, and
-    // `Kernel::describe()` reads `Endpoint::describe()` directly and needs no
-    // renderer at all — so the catalog was the ONE reachable caller, and it is
-    // the one a machine reads. Found 2026-09-10 while adopting
-    // `ikigai-conformance`, by walking the kernel this function returns.
-    //
-    // `ikigai-vocab::TurtleRenderer` is the canonical projection (Turtle,
-    // text/plain, and the `application/json` face a client engine reads to route
-    // named arguments), the same renderer the CLI hosts mount.
-    Ok(Kernel::with_meta_renderer(
-        Arc::new(Fallback::new(ordered)),
-        Arc::new(TurtleRenderer),
-    ))
+    Ok(Arc::new(Fallback::new(ordered)))
 }
 
 /// Dial an IPC peer and box it as a mountable resolver.
