@@ -701,6 +701,17 @@ fn browse_shell_hosts_the_faces() {
     );
 }
 
+/// Even one-character face controls need a full pointer target (ledger #2919).
+/// The browser probe in tests/browser/browse-target-size.cjs checks the rendered
+/// dimensions and axe's spacing rule; this pins the served stylesheet in CI.
+#[test]
+fn browse_buttons_keep_a_minimum_pointer_target() {
+    let (status, _, style) = get("/browse.css");
+    assert_eq!(status, 200);
+    let style = String::from_utf8(style).unwrap();
+    assert!(style.contains("min-width:24px;min-height:24px;"));
+}
+
 /// The shell shows a refusal where it happened (ledger #676). A refused write
 /// stays a typed 4xx, so htmx swaps nothing and the form keeps its input; this
 /// handler is what tells the person why. Without it the page did nothing at
