@@ -172,7 +172,7 @@ the bind.
 | `POST /urn:iki:annotation[:{id}]` | `Sink` — the one write route v1 exposes (annotation minting for the browse overlay). The legacy `POST /urn:annotation[:{id}]` spelling is refused (405) since its window closed — see [The annotation route and the `urn:iki:` window](#the-annotation-route-and-the-urniki-window) |
 | `GET`/`POST /sparql` | `Source` on `urn:sparql:{form}` — the SPARQL face (below) |
 | `GET /` | index: browsable repos (via `urn:repo:list`) + the kernel catalog |
-| `GET /browse/{uri}` | the htmx shell page hosting the browse family's HTML faces |
+| `GET /browse/{uri}[?k=v…]` | the htmx shell page hosting the browse family's HTML faces; the query is the first view's arguments (`?state=all`), and each view the shell loads puts its own URL in the address bar, so Back, a reload and a shared link reopen it |
 | `GET /k/source <iri> [k=v ...]` | the host adapter the faces' `hx-get` affordances target |
 | `POST /k/sink urn:iki:annotation…` | the faces' `hx-post` (form fields → args, any other body → the piped `content`; same single write route) |
 | anything else | 405 + `Allow` |
