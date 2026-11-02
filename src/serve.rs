@@ -1100,7 +1100,8 @@ const BROWSE_CSS: &str = "\
  :root{color-scheme:light dark}\
  body{margin:0;font:15px/1.5 -apple-system,system-ui,sans-serif;\
    max-width:60rem;padding:1rem;margin-inline:auto}\
- button{background:none;border:none;padding:0;font:inherit;\
+ button{background:none;border:none;padding:0 .25rem;font:inherit;\
+   min-width:24px;min-height:24px;\
    color:light-dark(#0b57d0,#8ab4f8);cursor:pointer}\
  button:hover{text-decoration:underline}\
  .browse-entries{list-style:none;padding-left:0}\

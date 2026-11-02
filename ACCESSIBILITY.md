@@ -66,8 +66,9 @@ and say plainly what has not been tested. CI checks the markup and colors the fi
 ## Conformance status
 
 **Evaluation in progress** against WCAG 2.2 AA. The second axe-core run in Chrome (2026-11-02)
-found no WCAG A or AA failure on the index or the editor; the shell still has one, from the
-browse faces' controls (listed under "Known limitations"). CI pins the markup and colors behind
+found no WCAG A or AA failure on the index or the editor; that run found undersized controls
+in the shell. A targeted follow-up with a tree fixture verified the shell fix described below.
+The remaining findings and gaps are listed under "Known limitations". CI pins the markup and colors behind
 the fixes, not the WCAG rules themselves, and **no screen reader has been used**. Do not infer a
 conformance claim from a green build or from this file.
 
@@ -82,6 +83,7 @@ reviews; none of it gates a merge.
 |---|---|---|---|
 | `cargo test` (`tests/http.rs`, `src/sparql.rs`, CI on every pull request) | the crate's tests | That a browser's `Accept` gets the HTML face, the shell hosts the faces, and the editor keeps its graph narrowing. And, since 2026-11-02: every page has `lang`; the query field has a label and a worded shortcut hint; the index has a viewport and a `<main>`, and wraps long scopes; the shell has an `h1`, a standing status region, a script that moves focus, title and URL with each view, and forwards a view's arguments; every editor text color reaches 4.5:1 and its border and focus ring 3:1 in both schemes (WCAG arithmetic from `ikigai-a11y`), with no `opacity` dimming; the query is visible without JavaScript | What the scripts do in a browser (the rows below); any rule not named here |
 | axe-core in Chrome over a running server (2026-10-15, and again 2026-11-02) | axe-core 4.10.3, playwright-core 1.63.0, Google Chrome 153.0.8010.54 (2026-10-15); the same axe and playwright in the installed Chrome (2026-11-02) | The index, the editor (empty, a SELECT table, ASK, an error) and the shell (a directory, a file, a refused repository), with the browse faces loaded from a mounted peer under the browse-only ceiling; light and dark color schemes; 1280 and 320 CSS px wide. Rules axe tags WCAG 2.0/2.1/2.2 A and AA, plus best-practice rules as advisories | The editor's highlighted query (axe cannot see behind the textarea overlay); states not opened (the explanation and pull-request views, the annotation form submitted, a 403 on a control); the read-only LAN posture |
+| Target-size regression probe (2026-11-02), `tests/browser/browse-target-size.cjs` | axe-core 4.10.3, Playwright 1.56.1, Chromium 141.0.7390.37 on Linux | Running shell and served CSS, with a seven-directory tree fixture replacing the mounted peer; light and dark at 1280 and 320 CSS px. Before: seven axe `target-size` failures, explain buttons 6.52 by 22.5 CSS px. After: no `target-size` failures, all seven 24 by 24 CSS px; no horizontal overflow; programmatic keyboard focus has a visible outline | Real mounted faces, other axe rules, other browsers, manual keyboard or assistive technology testing. This probe is run separately from CI; CI pins the minimum dimensions in the served CSS |
 | Keyboard and script probe in the same Chrome (2026-10-15, 2026-11-02) | as above | Tab order on the editor and its focus ring; the editor with JavaScript off; in the shell, Enter on a directory (where focus lands, the title and URL), then Back and Forward; a refused read, and what the status region says | Every other control and page |
 | Contrast arithmetic (one-off) | WCAG 2.x relative luminance | The editor's five syntax colors and its borders, in both schemes, against the editor background | Any color not named in `SPARQL_CSS` |
 | Horizontal scroll at 320 CSS px (same run) | as above | Whether any page scrolls sideways at 320 px | Zoom to 400% in a desktop window, text spacing |
@@ -119,7 +121,6 @@ tried in a forced-colors (high contrast) mode.
 
 | Barrier or gap | Where | Impact | Workaround |
 |---|---|---|---|
-| The browse faces' small icon buttons (the "explain" button on each tree row) are under 24 by 24 CSS px with too little space around them (axe `target-size`, SC 2.5.8). The faces write the buttons; the shell's style sheet takes their padding away | browse shell, with the tree face | Hard to hit with a pointer, a finger or a tremor | The row's own link opens the entry |
 | Two unnamed `<nav>` landmarks per view (axe `landmark-unique`, advisory) | browse faces (`ikigai-browse`) | The two landmarks cannot be told apart | Their contents |
 | The tree face's "recent pull requests" heading is an `h4` straight under the shell's `h1` (axe `heading-order`, advisory) | browse faces (`ikigai-browse`) | Heading navigation shows a jump in levels | none needed to read it |
 | The run shortcut works only with JavaScript, so without it the hint is not shown | SPARQL editor, JavaScript off | none: the Run button submits the form | The Run button |
@@ -207,6 +208,7 @@ added, after a reported barrier is fixed, and before any conformance claim.
 | 2026-10-14 | A refused affordance says why, in a `role="status"` note beside the control; a 403 marks the control disabled | PR #25 |
 | 2026-10-15 | This file, with the first axe run and its findings | PR #27 |
 | 2026-11-02 | Fixed: `lang` on every page; a label for the query field; editor text, comment color, border and a focus ring at the contrast floors; the query visible without JavaScript; the shortcut described in words for the platform; the index's viewport, `<main>` and reflow at 320 px; in the shell an `h1`, focus, title and URL that follow each view (Back stays in the shell), and refusals announced through a standing status region. Found and listed: the faces' `target-size` and `heading-order` | ledger item 1645, this pull request |
+| 2026-11-02 | Fixed the shell button reset: minimum 24 by 24 CSS px and horizontal padding, including each tree row's explain control | ledger item 2919; targeted axe/browser probe described above |
 
 ## References
 
