@@ -656,7 +656,7 @@ async fn respond(face: &Face, req: HttpRequest) -> Resp {
         return meta(face, &req, uri).await;
     }
     if let Some(start) = req.path.strip_prefix("/browse/") {
-        return browse_shell(start, posture);
+        return browse_shell(start, &req.query, posture);
     }
     let uri = &req.path[1..]; // drop the leading `/`
     let Ok(target) = Iri::parse(uri.to_string()) else {
@@ -969,14 +969,24 @@ fn htmx_js() -> Resp {
     }
 }
 
-/// `GET /browse/{uri}` — the HOST PAGE for the browse family's htmx faces: a
+/// `GET /browse/{uri}[?k=v…]` — the HOST PAGE for the browse family's htmx faces: a
 /// shell that loads htmx, styles the `browse-*` classes, and `hx-get`s the
 /// starting resource into `#browse` on load. Everything after the first paint
 /// is the faces' own affordances through the `/k/` adapter.
-fn browse_shell(start: &str, posture: Posture) -> Resp {
+///
+/// The query is the VIEW's arguments (`?state=all` for a pull-request list), forwarded
+/// into the first read, because the shell's script writes each view it loads into the
+/// page URL ([`SHELL_JS`], ledger #1645): a reload, Back or a shared link opens that
+/// view, arguments and all. gonk's shell does the same (`view_args` in its `src/k.rs`),
+/// and this keeps its rule for what may be forwarded.
+fn browse_shell(start: &str, query: &[(String, String)], posture: Posture) -> Resp {
     if Iri::parse(start.to_string()).is_err() || !start.starts_with("urn:") {
         return error_resp(404, &format!("`{start}` is not a browsable urn:* IRI"));
     }
+    let args = match view_args(query) {
+        Ok(args) => args,
+        Err(reason) => return error_resp(400, &reason),
+    };
     // Read-only: don't OFFER the annotate form the gate would 403. The form
     // markup comes from the mounted peer's faces, which have no adapter-level
     // flag to omit it (`chrome=embed` strips crumbs only) — so the shell,
@@ -993,10 +1003,15 @@ fn browse_shell(start: &str, posture: Posture) -> Resp {
     // in as markup, and a `<script src>` inside it would be same-origin, which `script-src
     // 'self'` admits. With it off, htmx runs no script that arrives in a swap. The JSON sits in
     // a single-quoted attribute, so it holds no `'`.
+    // ★ The page's own landmarks and heading (ledger #1645): an `h1` naming the resource
+    // shown, which the script retitles and FOCUSES after each view it loads (else focus
+    // falls to `<body>` on every click), and a status region that is in the page from the
+    // start, for the script's refusal notes: a region inserted already filled may not be
+    // announced at all.
     let title = html_text(start);
     let target = attr(start);
     let body = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\">\
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
          <title>{title}</title>\
          <meta name=\"htmx-config\" \
@@ -1004,11 +1019,47 @@ fn browse_shell(start: &str, posture: Posture) -> Resp {
          <script src=\"/htmx.min.js\"></script>\
          <link rel=\"stylesheet\" href=\"/k/source urn:repo:style\">\
          <link rel=\"stylesheet\" href=\"/browse.css\"></head><body{body_class}>\
-         <main id=\"browse\" hx-get=\"/k/source {target} as=text/html\" \
-         hx-trigger=\"load\" hx-swap=\"innerHTML\">loading {title}…</main>\
+         <div id=\"browse-announce\" class=\"visually-hidden\" role=\"status\"></div>\
+         <main><h1 id=\"browse-title\" tabindex=\"-1\">{title}</h1>\
+         <div id=\"browse\" hx-get=\"/k/source {target} as=text/html{args}\" \
+         hx-trigger=\"load\" hx-swap=\"innerHTML\">loading {title}…</div></main>\
          <script src=\"/shell.js\"></script></body></html>\n"
     );
     page_resp(body)
+}
+
+/// A view's arguments from the shell URL's query, as ` k=v` words for its first `/k/`
+/// read (attribute-escaped). `as` is the face, not the view, and is not carried: the
+/// shell always asks for `text/html`. A name is lowercase letters, digits and `-`, and a
+/// value is plain text with no space: the `/k/` command splits on whitespace, so a space
+/// would make a value into another argument. Anything else is refused, never dropped.
+fn view_args(query: &[(String, String)]) -> Result<String, String> {
+    let name_ok = |n: &str| {
+        let mut chars = n.chars();
+        chars.next().is_some_and(|c| c.is_ascii_lowercase())
+            && n.len() <= 32
+            && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    };
+    let value_ok = |v: &str| {
+        !v.is_empty()
+            && v.len() <= 200
+            && v.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "._:@/+-=,".contains(c))
+    };
+    let mut out = String::new();
+    for (name, value) in query {
+        if name == "as" {
+            continue;
+        }
+        if !name_ok(name) || !value_ok(value) {
+            return Err(format!(
+                "`{name}={value}` cannot be forwarded to the view: a name is lowercase \
+                 letters, digits and `-`, and a value has no spaces"
+            ));
+        }
+        out.push_str(&format!(" {}={}", attr(name), attr(value)));
+    }
+    Ok(out)
 }
 
 /// One of this server's own HTML pages: under the page policy ([`HTML_DOOR_CSP`]), never
@@ -1071,9 +1122,16 @@ const BROWSE_CSS: &str = "\
    border:1px solid light-dark(#d93025,#f28b82);color:light-dark(#a50e0e,#f28b82);\
    white-space:pre-wrap;max-width:40rem}\
  .readonly .browse-annotate{display:none}\
+ .visually-hidden{position:absolute;width:1px;height:1px;margin:-1px;padding:0;\
+   border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}\
+ #browse-title{font:600 1rem/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;\
+   margin:0 0 .75rem;overflow-wrap:anywhere}\
+ #browse-title:focus-visible{outline:2px solid light-dark(#0b57d0,#8ab4f8);\
+   outline-offset:2px}\
+ .index code{overflow-wrap:anywhere}\
 ";
 
-/// The shell's one behavior of its own: say WHY when an affordance is refused
+/// The shell's behavior of its own. First, say WHY when an affordance is refused
 /// (ledger #676). A refusal is a typed 4xx/5xx, so htmx swaps nothing and a
 /// form keeps its input, which is right, but alone it means the page does
 /// nothing visible and the person cannot tell a refusal from a dead click.
@@ -1090,12 +1148,40 @@ const BROWSE_CSS: &str = "\
 /// page; and a retry REPLACES the element's previous note rather than stacking
 /// another. The text is set with `textContent`, never parsed as markup: it is
 /// the server's (or a peer's) message, not HTML.
+///
+/// The note is visible only; what a screen reader announces is the same text written
+/// into `#browse-announce`, a `role="status"` region that is in the page from the start
+/// (ledger #1645). A note that arrived as a new live region with its text already in it
+/// is a case assistive technology is not required to announce. The region is emptied
+/// and refilled a beat later, so the same refusal twice is announced twice. Only what
+/// the person asked for is announced: a part of a view that loads itself
+/// (`hx-trigger="load"`, a tree's embedded pull-request list under a ceiling without
+/// `gh`) still shows its note in place, but saying it aloud on every page would be
+/// noise about something nobody did.
+///
+/// Second, keep the person's place across views (ledger #1645, SC 2.4.3 and 2.4.2). A
+/// face swaps each view into `#browse` in place, so before this focus fell to `<body>`
+/// on every click, and the title and URL kept the first resource for good: Back left
+/// the shell. Now each view a `/k/source` read loads into `#browse` retitles the page
+/// and its `h1`, pushes its own page URL (`/browse/{iri}` with the view's arguments as
+/// the query, which [`browse_shell`] forwards), and moves focus to the `h1`; Back and
+/// Forward load the view for the URL. This is gonk's browse history (`pageUrlOf` in its
+/// `web/gonk.js`), plus the focus and the title. The first view (the page's own load)
+/// moves nothing.
 const SHELL_JS: &str = "\
  (function(){\
+ var announcer=document.getElementById('browse-announce');\
+ function announce(text){\
+ if(!announcer)return;\
+ announcer.textContent='';\
+ setTimeout(function(){announcer.textContent=text},100);\
+ }\
  function note(elt,text,status){\
  var host=elt&&elt.closest&&elt.closest('#browse')?elt:null;\
  var p=document.createElement('p');\
- p.className='affordance-error';p.setAttribute('role','status');p.textContent=text;\
+ p.className='affordance-error';p.textContent=text;\
+ var trigger=(elt&&elt.getAttribute&&elt.getAttribute('hx-trigger'))||'';\
+ if(trigger.indexOf('load')!==0)announce(text);\
  if(!host){document.body.insertBefore(p,document.body.firstChild);return}\
  var target=host.getAttribute('hx-target');\
  if(!target||target==='this'){host.textContent='';host.appendChild(p)}\
@@ -1112,6 +1198,46 @@ const SHELL_JS: &str = "\
  });\
  document.addEventListener('htmx:sendError',function(e){\
  note(e.detail.elt,'The server did not answer.',0);\
+ });\
+ var region=document.getElementById('browse');\
+ var heading=document.getElementById('browse-title');\
+ var first=true;\
+ function here(){return location.pathname+location.search}\
+ function viewOf(path){\
+ if(typeof path!=='string'||path.slice(0,10)!=='/k/source ')return null;\
+ var words=path.slice(10).trim().split(/\\s+/);\
+ if(!words[0])return null;\
+ var query=new URLSearchParams();\
+ for(var i=1;i<words.length;i++){\
+ var at=words[i].indexOf('=');\
+ if(at<1)return null;\
+ var name=words[i].slice(0,at);\
+ if(name==='as'||name==='chrome')continue;\
+ query.append(name,words[i].slice(at+1));\
+ }\
+ var q=query.toString();\
+ return {iri:words[0],url:'/browse/'+encodeURI(words[0])+(q?'?'+q:'')};\
+ }\
+ document.addEventListener('htmx:afterSwap',function(e){\
+ var target=e.detail&&e.detail.target;\
+ if(!target||target!==region)return;\
+ var config=e.detail.requestConfig;\
+ var view=config&&config.verb==='get'?viewOf(config.path):null;\
+ if(view){\
+ document.title=view.iri;\
+ if(heading)heading.textContent=view.iri;\
+ region.setAttribute('data-view-url',view.url);\
+ if(!first&&view.url!==here())history.pushState({browse:view.url},'',view.url);\
+ }\
+ if(!first&&heading)heading.focus();\
+ first=false;\
+ });\
+ window.addEventListener('popstate',function(){\
+ if(!region||location.pathname.slice(0,8)!=='/browse/')return;\
+ if(region.getAttribute('data-view-url')===here())return;\
+ var iri=decodeURI(location.pathname.slice(8)),args='';\
+ new URLSearchParams(location.search).forEach(function(value,name){args+=' '+name+'='+value});\
+ htmx.ajax('GET','/k/source '+iri+' as=text/html'+args,{target:'#browse',swap:'innerHTML'});\
  });\
  })();";
 
@@ -1212,11 +1338,12 @@ async fn index(face: &Face) -> Resp {
         }
     };
     let body = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\">\
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
          <title>ikigai</title>\
          <link rel=\"stylesheet\" href=\"/k/source urn:repo:style\">\
          <link rel=\"stylesheet\" href=\"/browse.css\"></head><body>\
-         <h1>ikigai</h1>\
+         <main class=\"index\"><h1>ikigai</h1>\
          <p>Resources this kernel serves. Open any <code>urn:*</code> as a path, \
          e.g. <code>/urn:repo:ikigai-core:tree</code>.</p>\
          <h2>Query</h2>\
@@ -1224,7 +1351,7 @@ async fn index(face: &Face) -> Resp {
          (explanations, annotations, review passes), queryable.</p>\
          {repos}\
          <h2>Catalog</h2><ul>\n{rows}</ul>\
-         {ceiling}</body></html>\n"
+         {ceiling}</main></body></html>\n"
     );
     page_resp(body)
 }

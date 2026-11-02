@@ -10,7 +10,9 @@
 //!   that fill the editor on click. Entirely same-origin: the highlighter is a
 //!   small overlay (a `<pre>` behind a transparent-text `<textarea>`, its
 //!   script and style served as `/sparql.js` and `/sparql.css` so the page
-//!   policy needs no inline exception),
+//!   policy needs no inline exception; the text goes transparent only once the
+//!   script has painted the overlay, so with JavaScript off the textarea is a
+//!   plain, visible one),
 //!   not a vendored editor — YASGUI/YASQE's dist is ~1MB of minified JS, an
 //!   order of magnitude more un-auditable code than this whole server, so v1
 //!   takes the textarea. No external requests, ever.
@@ -466,7 +468,7 @@ async fn editor_page(face: &Face, query: Option<&str>, graphs: &[String]) -> Res
         )
     };
     let body = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\">\
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
          <title>SPARQL \u{2014} ikigai</title>\
          <link rel=\"stylesheet\" href=\"/sparql.css\"></head><body>\
@@ -475,10 +477,12 @@ async fn editor_page(face: &Face, query: Option<&str>, graphs: &[String]) -> Res
          (SELECT, ASK, CONSTRUCT, DESCRIBE). <a href=\"/\">catalog</a></p></header>\
          <div class=\"layout\">\
          <main><form method=\"GET\" action=\"/sparql\">{graph_fields}\
+         <label for=\"q\">Query</label>\
          <div class=\"editor\"><pre id=\"hl\" aria-hidden=\"true\"></pre>\
-         <textarea id=\"q\" name=\"query\" spellcheck=\"false\">{textarea}</textarea></div>\
+         <textarea id=\"q\" name=\"query\" spellcheck=\"false\" \
+         aria-keyshortcuts=\"Control+Enter Meta+Enter\" aria-describedby=\"hint\">{textarea}</textarea></div>\
          <div class=\"run\"><button type=\"submit\">Run</button>\
-         <span class=\"hint\">\u{2318}\u{23ce}</span>{faces}</div>\
+         <span class=\"hint\" id=\"hint\" hidden></span>{faces}</div>\
          </form>{results}</main>\
          <aside><h2>Sample queries</h2>\
          <p class=\"aside-note\">The review layer, queried \u{2014} click to load.</p>\
@@ -614,46 +618,50 @@ pub(crate) const SPARQL_CSS: &str = "\
  :root{color-scheme:light dark}\
  body{margin:0;font:15px/1.5 -apple-system,system-ui,sans-serif;\
    max-width:75rem;padding:1rem;margin-inline:auto}\
- header p{opacity:.75;margin-top:-.5rem}\
+ header p{color:light-dark(#555,#b0b0b0);margin-top:-.5rem}\
  a{color:light-dark(#0b57d0,#8ab4f8)}\
  .layout{display:grid;grid-template-columns:minmax(0,1fr) 18rem;gap:1.5rem}\
  @media(max-width:52rem){.layout{grid-template-columns:minmax(0,1fr)}}\
- .editor{position:relative;border:1px solid light-dark(#ccc,#444);\
+ label[for=q]{display:block;font-weight:600;margin-bottom:.3rem}\
+ .editor{position:relative;border:1px solid light-dark(#767676,#7a7a7a);\
    border-radius:6px;overflow:hidden;background:light-dark(#fff,#1c1c1e)}\
+ .editor:focus-within{outline:2px solid light-dark(#0b57d0,#8ab4f8);outline-offset:2px}\
  #hl,#q{margin:0;box-sizing:border-box;width:100%;min-height:15rem;\
    font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;\
    padding:.7rem .9rem;white-space:pre-wrap;word-break:break-word}\
- #hl{position:absolute;inset:0;overflow:hidden;pointer-events:none}\
- #q{position:relative;display:block;background:transparent;color:transparent;\
-   caret-color:light-dark(#000,#eee);border:none;outline:none;resize:vertical}\
+ #hl{display:none}\
+ .editor.hl #hl{display:block;position:absolute;inset:0;overflow:hidden;pointer-events:none}\
+ #q{position:relative;display:block;background:transparent;color:inherit;\
+   border:none;outline:none;resize:vertical}\
+ .editor.hl #q{color:transparent;caret-color:light-dark(#000,#eee)}\
  .k{color:light-dark(#8f288f,#d38ad3);font-weight:600}\
  .v{color:light-dark(#0b57d0,#8ab4f8)}\
  .i{color:light-dark(#106a49,#6fcf97)}\
  .s{color:light-dark(#a03d00,#f1a06c)}\
- .c{color:light-dark(#777,#888);font-style:italic}\
+ .c{color:light-dark(#6b6b6b,#888);font-style:italic}\
  .run{display:flex;align-items:center;gap:.75rem;margin:.6rem 0 1rem}\
  .run button{font:inherit;padding:.35rem 1.1rem;border-radius:6px;\
    border:1px solid light-dark(#ccc,#555);cursor:pointer;\
    background:light-dark(#0b57d0,#8ab4f8);color:light-dark(#fff,#111)}\
- .hint{opacity:.5;font-size:.85em}\
- .faces{margin-left:auto;font-size:.9em;opacity:.85}\
+ .hint{color:light-dark(#555,#b0b0b0);font-size:.85em}\
+ .faces{margin-left:auto;font-size:.9em;color:light-dark(#555,#b0b0b0)}\
  .faces a{margin-left:.4rem}\
  aside h2{font-size:1em;margin-bottom:.25rem}\
- .aside-note{opacity:.6;font-size:.85em;margin-top:0}\
+ .aside-note{color:light-dark(#555,#b0b0b0);font-size:.85em;margin-top:0}\
  .samples{list-style:none;padding:0;margin:0}\
  .samples li{margin:.35rem 0}\
  .samples a{display:block;text-decoration:none;padding:.45rem .6rem;\
    border:1px solid light-dark(#e2e2e2,#3a3a3c);border-radius:6px}\
  .samples a:hover{border-color:light-dark(#0b57d0,#8ab4f8)}\
  .samples strong{display:block;font-size:.92em}\
- .samples small{opacity:.7;line-height:1.3;display:block}\
+ .samples small{color:light-dark(#555,#b0b0b0);line-height:1.3;display:block}\
  .results{border-collapse:collapse;width:100%;font-size:.92em}\
  .results th,.results td{text-align:left;vertical-align:top;\
    padding:.35rem .6rem;border-bottom:1px solid light-dark(#e2e2e2,#3a3a3c)}\
  .results th{border-bottom-width:2px}\
  .results td{white-space:pre-wrap;word-break:break-word}\
  .results code{font-size:.92em}\
- .count{opacity:.6;font-size:.85em}\
+ .count{color:light-dark(#555,#b0b0b0);font-size:.85em}\
  .ask{font-size:1.3em;font-weight:600}\
  .turtle{background:light-dark(#f6f8fa,#1c1c1e);padding:.6rem .8rem;\
    border-radius:6px;overflow-x:auto;\
@@ -666,6 +674,12 @@ pub(crate) const SPARQL_CSS: &str = "\
 /// (comments, strings, IRIs, variables, keywords), keep scroll in sync, and
 /// submit on Cmd/Ctrl+Enter. This IS the "editor" — 30 lines instead of a
 /// vendored megabyte.
+///
+/// It also does the two things only a script can (ledger #1645): it arms the overlay
+/// (the `hl` class makes the textarea's own text transparent, which without the
+/// script would hide the query), and it says the run shortcut in words for this
+/// platform, in a hint that stays hidden without it, since the shortcut is this
+/// script's too.
 pub(crate) const EDITOR_JS: &str = "\
  (function(){\
  var q=document.getElementById('q'),hl=document.getElementById('hl');\
@@ -690,6 +704,13 @@ pub(crate) const EDITOR_JS: &str = "\
  if((e.metaKey||e.ctrlKey)&&e.key==='Enter'){e.preventDefault();q.form.submit()}\
  });\
  paint();\
+ q.parentNode.classList.add('hl');\
+ var hint=document.getElementById('hint');\
+ if(hint){\
+ var mac=/Mac|iPhone|iPad/.test(navigator.platform||navigator.userAgent);\
+ hint.textContent=mac?'Command+Return runs the query':'Ctrl+Enter runs the query';\
+ hint.hidden=false;\
+ }\
  })();";
 
 #[cfg(test)]
@@ -848,5 +869,108 @@ mod tests {
         );
         assert_eq!(accept_for_form("text/turtle", "select"), None);
         assert_eq!(accept_for_form("*/*", "select"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // The editor's colors against WCAG 2.2 (ledger #1645).
+    // -----------------------------------------------------------------------
+
+    /// What a color is painted on: the page canvas (Chrome paints `Canvas` as white
+    /// in light and `rgb(18, 18, 18)` in dark under `color-scheme: light dark`) and
+    /// the editor's own background.
+    const PAGE: (&str, &str) = ("#ffffff", "#121212");
+    const EDITOR: (&str, &str) = ("#ffffff", "#1c1c1e");
+
+    /// The `light-dark(a,b)` pair a rule gives after `property` (its name and colon, and
+    /// any leading values: `border:1px solid `), read from the style sheet the browser gets. Panics, naming the rule, when the rule or the pair is missing.
+    fn pair(selector: &str, property: &str) -> (String, String) {
+        // The sheet is one line (the `\` continuations strip each line's indent), so a
+        // rule starts right after the previous one's `}`.
+        let open = format!("}}{selector}{{");
+        let at = SPARQL_CSS
+            .find(&open)
+            .unwrap_or_else(|| panic!("no `{selector}` rule"));
+        let body = &SPARQL_CSS[at + open.len()..];
+        let body = &body[..body.find('}').unwrap()];
+        let decl = format!("{property}light-dark(");
+        let start = body
+            .find(&decl)
+            .unwrap_or_else(|| panic!("`{selector}` has no `{property}light-dark(…)`"));
+        let args = &body[start + decl.len()..];
+        let args = &args[..args.find(')').unwrap()];
+        let (light, dark) = args.split_once(',').unwrap();
+        (light.to_string(), dark.to_string())
+    }
+
+    fn ratio(fg: &str, bg: &str) -> f64 {
+        ikigai_a11y::ratio(
+            ikigai_a11y::Rgba::parse(fg).unwrap(),
+            ikigai_a11y::Rgba::parse(bg).unwrap(),
+        )
+    }
+
+    /// Assert `fg` (a light/dark pair) reaches `floor` on `ground` in both schemes.
+    fn reaches(what: &str, fg: (String, String), ground: (&str, &str), floor: f64) {
+        for (scheme, fg, bg) in [("light", &fg.0, ground.0), ("dark", &fg.1, ground.1)] {
+            let r = ratio(fg, bg);
+            assert!(
+                r >= floor,
+                "{what} ({scheme}): {fg} on {bg} is {r:.2}:1, under {floor}:1"
+            );
+        }
+    }
+
+    /// SC 1.4.3: every text color the editor sets reaches 4.5:1, and none is dimmed
+    /// with `opacity` (which is how the header link and the sample descriptions fell
+    /// to 3.85:1 and 3.49:1 in the light scheme).
+    #[test]
+    fn the_editors_text_reaches_the_contrast_floor() {
+        assert!(
+            !SPARQL_CSS.contains("opacity"),
+            "text is dimmed with opacity, whose contrast depends on what it lands on"
+        );
+        for selector in [".c", ".k", ".v", ".i", ".s"] {
+            reaches(selector, pair(selector, "color:"), EDITOR, 4.5);
+        }
+        for selector in [
+            "header p",
+            ".hint",
+            ".faces",
+            ".aside-note",
+            ".samples small",
+            ".count",
+        ] {
+            reaches(selector, pair(selector, "color:"), PAGE, 4.5);
+        }
+    }
+
+    /// SC 1.4.11: the edit area's boundary reaches 3:1 against the page and against
+    /// its own background, and so does the focus indicator that replaces the
+    /// textarea's removed outline (SC 2.4.7).
+    #[test]
+    fn the_editors_boundary_and_focus_are_visible() {
+        let border = pair(".editor", "border:1px solid ");
+        reaches("editor border on the page", border.clone(), PAGE, 3.0);
+        reaches("editor border on the editor", border, EDITOR, 3.0);
+        let focus = pair(".editor:focus-within", "outline:2px solid ");
+        reaches("editor focus ring", focus, PAGE, 3.0);
+    }
+
+    /// With JavaScript off the query is still visible: only the script, once it has
+    /// painted the overlay, makes the textarea's own text transparent.
+    #[test]
+    fn the_query_is_visible_without_javascript() {
+        let at = SPARQL_CSS.find("}#q{").expect("a #q rule");
+        let rule = &SPARQL_CSS[at..at + SPARQL_CSS[at..].find('}').unwrap()];
+        assert!(!rule.contains("color:transparent"), "#q rule: {rule}");
+        assert!(SPARQL_CSS.contains("}.editor.hl #q{"), "no scripted rule");
+        assert!(
+            SPARQL_CSS.contains("}#hl{display:none}"),
+            "overlay shows with JS off"
+        );
+        assert!(
+            EDITOR_JS.contains("classList.add('hl')"),
+            "script never arms it"
+        );
     }
 }

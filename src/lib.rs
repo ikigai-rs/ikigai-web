@@ -107,6 +107,9 @@
 //! exactly `source` (GET) and `sink` (POST, annotation family only — the same
 //! single write route), and `/browse/{uri}` serves the shell page (vendored
 //! htmx, `#browse` target, minimal styling) that makes the faces clickable.
+//! The shell's script gives each view the faces load its own page URL
+//! (`/browse/{uri}?k=v…`, the query forwarded as the view's arguments), title and
+//! focused heading, so Back returns to the view before.
 //! `GET /` is a courtesy index: the browsable repos (via `urn:repo:list`) and
 //! the kernel catalog.
 //!

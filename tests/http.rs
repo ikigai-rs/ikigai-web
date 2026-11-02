@@ -738,12 +738,11 @@ fn browse_shell_shows_refusals_where_they_happen() {
     );
     assert!(body.contains("htmx:responseError"), "shell was: {body}");
     assert!(body.contains("htmx:sendError"), "shell was: {body}");
-    // The note's class is styled, and it is announced to assistive technology.
+    // The note's class is styled, and its text is announced to assistive technology
+    // through the shell's standing status region (ledger #1645; pinned in
+    // `the_shell_announces_refusals_through_a_standing_region`).
     assert!(body.contains(".affordance-error{"), "shell was: {body}");
-    assert!(
-        body.contains("setAttribute('role','status')"),
-        "shell was: {body}"
-    );
+    assert!(body.contains("announce(text)"), "shell was: {body}");
     // The refusal text is written as TEXT, never parsed as markup.
     assert!(body.contains(".textContent="), "shell was: {body}");
     assert!(!body.contains(".innerHTML="), "shell was: {body}");
@@ -1210,4 +1209,135 @@ fn fixture_sanity_direct_issue() {
         )
         .unwrap();
     assert!(String::from_utf8(repr.bytes).unwrap().contains("body=x"));
+}
+
+// ---------------------------------------------------------------------------
+// Accessibility of the three pages (ledger #1645). These pin the markup; the
+// scripted behavior (focus, history, announcements) is checked in a browser,
+// and the pull request that added these says how.
+// ---------------------------------------------------------------------------
+
+fn editor_html() -> String {
+    let (_, _, body) = roundtrip("GET /sparql HTTP/1.1\r\nHost: t\r\nAccept: text/html\r\n\r\n");
+    String::from_utf8(body).unwrap()
+}
+
+fn text(path: &str) -> String {
+    String::from_utf8(get(path).2).unwrap()
+}
+
+/// SC 3.1.1: every page this server writes names its language.
+#[test]
+fn every_page_names_its_language() {
+    for (page, body) in [
+        ("index", text("/")),
+        ("editor", editor_html()),
+        ("shell", text("/browse/urn:repo:demo:tree")),
+    ] {
+        assert!(
+            body.starts_with("<!doctype html><html lang=\"en\">"),
+            "{page}: {body}"
+        );
+    }
+}
+
+/// SC 1.3.1, 4.1.2: the query field has a visible label, and its run shortcut is
+/// described in words for the platform rather than as Mac symbols everywhere. The
+/// hint stays hidden until the script that makes the shortcut work has run.
+#[test]
+fn the_query_field_is_labeled_and_its_shortcut_described() {
+    let body = editor_html();
+    assert!(body.contains("<label for=\"q\">"), "page was: {body}");
+    assert!(!body.contains("\u{2318}\u{23ce}"), "page was: {body}");
+    assert!(
+        body.contains("aria-keyshortcuts=\"Control+Enter Meta+Enter\""),
+        "page was: {body}"
+    );
+    assert!(
+        body.contains("<span class=\"hint\" id=\"hint\" hidden>"),
+        "page was: {body}"
+    );
+    let script = text("/sparql.js");
+    assert!(script.contains("Ctrl+Enter"), "script was: {script}");
+    assert!(script.contains("Command+Return"), "script was: {script}");
+}
+
+/// SC 1.4.10 and landmarks: the index fits a phone (a viewport, and long scopes
+/// that wrap instead of scrolling the page sideways) and keeps its content in
+/// `<main>`.
+#[test]
+fn the_index_reflows_and_has_a_main_landmark() {
+    let body = text("/");
+    assert!(
+        body.contains("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"),
+        "index was: {body}"
+    );
+    assert!(
+        body.contains("<main class=\"index\"><h1>ikigai</h1>"),
+        "index was: {body}"
+    );
+    assert!(body.contains("</main></body>"), "index was: {body}");
+    assert!(
+        text("/browse.css").contains(".index code{overflow-wrap:anywhere}"),
+        "a long scope still overflows"
+    );
+}
+
+/// SC 2.4.2, 2.4.3 and the shell's heading: the shell names the resource in an `h1`
+/// that the script focuses after each view it loads, and the script moves the title
+/// and the URL with the view (Back returns to the view before).
+#[test]
+fn the_shell_has_a_heading_and_keeps_place_across_views() {
+    let body = text("/browse/urn:repo:demo:tree");
+    assert!(
+        body.contains("<main><h1 id=\"browse-title\" tabindex=\"-1\">urn:repo:demo:tree</h1>"),
+        "shell was: {body}"
+    );
+    assert!(
+        body.contains("<div id=\"browse\" hx-get=\"/k/source urn:repo:demo:tree as=text/html\""),
+        "shell was: {body}"
+    );
+    let script = text("/shell.js");
+    for needle in ["pushState", "popstate", ".focus(", "document.title="] {
+        assert!(script.contains(needle), "no `{needle}` in: {script}");
+    }
+}
+
+/// A view's arguments travel in the shell's URL, so a reload or Back opens the same
+/// view (the history half of ledger #1645). Only plain names and values pass: a
+/// value with a space would split the `/k/` command, and is refused.
+#[test]
+fn the_shell_forwards_a_views_arguments() {
+    let body = text("/browse/urn:repo:demo:prs?state=all&as=text/plain");
+    assert!(
+        body.contains("hx-get=\"/k/source urn:repo:demo:prs as=text/html state=all\""),
+        "shell was: {body}"
+    );
+    let (status, _, body) = get("/browse/urn:repo:demo:prs?state=a%20b");
+    assert_eq!(status, 400, "{}", String::from_utf8_lossy(&body));
+    let (status, _, _) = get("/browse/urn:repo:demo:prs?State=all");
+    assert_eq!(status, 400);
+}
+
+/// SC 4.1.3: a refusal is announced through a status region that is in the page
+/// from the start (one inserted already filled may not be announced), and the
+/// visible note beside the control is not a second live region.
+#[test]
+fn the_shell_announces_refusals_through_a_standing_region() {
+    let body = text("/browse/urn:repo:demo:tree");
+    assert!(
+        body.contains(
+            "<div id=\"browse-announce\" class=\"visually-hidden\" role=\"status\"></div>"
+        ),
+        "shell was: {body}"
+    );
+    let script = text("/shell.js");
+    assert!(
+        !script.contains("setAttribute('role'"),
+        "script was: {script}"
+    );
+    assert!(
+        script.contains("getElementById('browse-announce')"),
+        "script was: {script}"
+    );
 }

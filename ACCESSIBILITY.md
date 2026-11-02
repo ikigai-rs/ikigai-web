@@ -19,7 +19,7 @@ Adapted from the [ACCESSIBILITY.md template](https://github.com/mgifford/ACCESSI
 | Private channel | [private vulnerability reporting](https://github.com/ikigai-rs/ikigai-web/security/advisories/new), for anything security-sensitive |
 | Target | WCAG 2.2 Level AA |
 | Status | Evaluation in progress. No conformance claim. |
-| Last reviewed | 2026-10-15 |
+| Last reviewed | 2026-11-02 |
 | Next review | when a page's markup, style or script in `src/serve.rs` or `src/sparql.rs` changes, when the vendored htmx changes version, when a page is added, or when the browse faces it hosts change shape |
 
 ## Commitment
@@ -29,8 +29,8 @@ explanations and the shared RDF store. A barrier in its three pages keeps that p
 everything behind them. We aim at WCAG 2.2 AA for everything listed under "In scope". We prefer
 native HTML over scripted widgets (the SPARQL editor is a form with a textarea, not a vendored
 editor), check the pages a browser actually renders rather than the Rust strings that build them,
-and say plainly what has not been tested. Today no accessibility check runs in CI here, and the
-known barriers below are open.
+and say plainly what has not been tested. CI checks the markup and colors the fixes below rely on
+(not a full accessibility check); the barriers still open are listed under "Known limitations".
 
 ## Scope
 
@@ -65,27 +65,35 @@ known barriers below are open.
 
 ## Conformance status
 
-**Evaluation in progress** against WCAG 2.2 AA. A one-off axe-core run in Chrome found failures
-of WCAG A and AA rules on all three pages (listed under "Known limitations"), no check runs in CI,
-and **no screen reader has been used**. Do not infer a conformance claim from a green build or from
-this file.
+**Evaluation in progress** against WCAG 2.2 AA. The second axe-core run in Chrome (2026-11-02)
+found no WCAG A or AA failure on the index or the editor; the shell still has one, from the
+browse faces' controls (listed under "Known limitations"). CI pins the markup and colors behind
+the fixes, not the WCAG rules themselves, and **no screen reader has been used**. Do not infer a
+conformance claim from a green build or from this file.
 
 ## Evidence
 
-Of the checks CI runs on every pull request, only `cargo test` touches the pages, and it is not an
-accessibility check. Everything else below was run once, by hand, for this file's review; none of
-it gates a merge.
+Of the checks CI runs on every pull request, only `cargo test` touches the pages. Since
+2026-11-02 some of its tests are accessibility checks of one fact each (listed in the first row);
+they are not an accessibility audit. Everything else below was run by hand, for this file's
+reviews; none of it gates a merge.
 
 | Check | Version | What it covers | What it does not cover |
 |---|---|---|---|
-| `cargo test` (`tests/http.rs`, CI on every pull request) | the crate's tests | That a browser's `Accept` gets the HTML face, the shell hosts the faces, the refusal note is written with `role="status"`, and the editor keeps its graph narrowing | No accessibility rule: no landmark, label, contrast or keyboard assertion |
-| axe-core in Chrome over a running server (one-off) | axe-core 4.10.3, playwright-core 1.63.0, Google Chrome 153.0.8010.54 | The index, the editor (empty, a SELECT table, ASK, an error) and the shell (a directory, a file, a refused repository), with the browse faces loaded from a mounted peer under the browse-only ceiling; light and dark color schemes; 1280 and 320 CSS px wide. Rules axe tags WCAG 2.0/2.1/2.2 A and AA, plus best-practice rules as advisories | The editor's highlighted query (axe cannot see behind the textarea overlay); states not opened (the explanation and pull-request views, the annotation form submitted, a 403 on a control); the read-only LAN posture |
-| Keyboard probe in the same Chrome (one-off) | as above | Tab order on the editor; tabbing to a directory in the shell and pressing Enter | Every other control and page |
+| `cargo test` (`tests/http.rs`, `src/sparql.rs`, CI on every pull request) | the crate's tests | That a browser's `Accept` gets the HTML face, the shell hosts the faces, and the editor keeps its graph narrowing. And, since 2026-11-02: every page has `lang`; the query field has a label and a worded shortcut hint; the index has a viewport and a `<main>`, and wraps long scopes; the shell has an `h1`, a standing status region, a script that moves focus, title and URL with each view, and forwards a view's arguments; every editor text color reaches 4.5:1 and its border and focus ring 3:1 in both schemes (WCAG arithmetic from `ikigai-a11y`), with no `opacity` dimming; the query is visible without JavaScript | What the scripts do in a browser (the rows below); any rule not named here |
+| axe-core in Chrome over a running server (2026-10-15, and again 2026-11-02) | axe-core 4.10.3, playwright-core 1.63.0, Google Chrome 153.0.8010.54 (2026-10-15); the same axe and playwright in the installed Chrome (2026-11-02) | The index, the editor (empty, a SELECT table, ASK, an error) and the shell (a directory, a file, a refused repository), with the browse faces loaded from a mounted peer under the browse-only ceiling; light and dark color schemes; 1280 and 320 CSS px wide. Rules axe tags WCAG 2.0/2.1/2.2 A and AA, plus best-practice rules as advisories | The editor's highlighted query (axe cannot see behind the textarea overlay); states not opened (the explanation and pull-request views, the annotation form submitted, a 403 on a control); the read-only LAN posture |
+| Keyboard and script probe in the same Chrome (2026-10-15, 2026-11-02) | as above | Tab order on the editor and its focus ring; the editor with JavaScript off; in the shell, Enter on a directory (where focus lands, the title and URL), then Back and Forward; a refused read, and what the status region says | Every other control and page |
 | Contrast arithmetic (one-off) | WCAG 2.x relative luminance | The editor's five syntax colors and its borders, in both schemes, against the editor background | Any color not named in `SPARQL_CSS` |
 | Horizontal scroll at 320 CSS px (same run) | as above | Whether any page scrolls sideways at 320 px | Zoom to 400% in a desktop window, text spacing |
 
-On 2026-10-15, on main at `cb7acf8`: `cargo test` passed (108 tests). Every WCAG A or AA violation
-the axe run reported, on any page in either scheme, is listed under "Known limitations". In the
+On 2026-10-15, on main at `cb7acf8`: `cargo test` passed (108 tests). On 2026-11-02, with the
+fixes of ledger item 1645: axe reported nothing on the index or the editor (empty and with a SELECT
+table) in either scheme at either width; on the shell (a directory) it reported the browse faces'
+`target-size`, `landmark-unique` and `heading-order` findings, listed below. In the shell, Enter on a
+directory moved focus to the new `h1`, set the title and URL to the directory, and Back and Forward
+moved between the two views inside the shell. A refused read the person asked for was written into
+the standing status region; a refusal of a part of a view that loads itself was shown but not
+announced. Every WCAG A or AA violation either run reported is listed under "Known limitations". In the
 dark scheme axe treats a page with no background color as white, which is not what Chrome paints
 (`color-scheme: light dark` gives a dark canvas, `rgb(18, 18, 18)`), so the dark runs were made
 with `html{background:Canvas}` added to the page: without it axe reported failures that are not
@@ -111,22 +119,13 @@ tried in a forced-colors (high contrast) mode.
 
 | Barrier or gap | Where | Impact | Workaround |
 |---|---|---|---|
-| No `lang` on `<html>` (axe `html-has-lang`, SC 3.1.1) | all three pages | A screen reader may read the page in the wrong language | The reader's default language, if it is English |
-| The query textarea has no label (axe `label`, critical; SC 1.3.1, 4.1.2) | SPARQL editor | A screen reader announces an unnamed edit field | The page heading says it is a SPARQL page |
-| Text below 4.5:1 in the light scheme (axe `color-contrast`, SC 1.4.3): the header's "catalog" link at 3.85:1 and each sample query's description at 3.49:1, both dimmed with `opacity` | SPARQL editor | Hard to read with low vision | The dark scheme passes |
-| The comment color in the highlighted query is 4.48:1 on white (computed; axe cannot see it) | SPARQL editor, light scheme | Comments slightly under the text floor | none |
-| The editor's border is 1.61:1 (light) and 1.92:1 (dark) against the page (computed; SC 1.4.11) | SPARQL editor | The edit area's boundary is hard to see | The query text marks the area |
-| The textarea removes its focus outline (`outline:none`) and adds no other focus style (SC 2.4.7) | SPARQL editor | Only the text caret shows where focus is | none |
-| The textarea's own text is transparent, and the visible text is painted by JavaScript | SPARQL editor, JavaScript off | The query cannot be seen while typing | Use a browser with JavaScript on |
-| The keyboard shortcut to run a query is shown only as the symbols "⌘⏎", on every platform (Ctrl+Enter also works) | SPARQL editor | The shortcut is hard to discover or understand | The Run button |
-| With a ceiling set, a long capability scope in its list makes the page scroll sideways by 151 px at 320 px wide (SC 1.4.10); the page also has no `viewport` meta, so a phone shows it zoomed out | index page | Reading on a narrow screen needs two-way scrolling or zooming | none |
-| No `<main>` landmark and nothing in any landmark (axe `landmark-one-main`, `region`, advisory) | index page | Landmark navigation finds nothing | Heading navigation: the page has an `h1` and `h2`s |
-| After a face loads another view, focus falls to `<body>`, and the page title and URL keep the starting resource (measured with the keyboard probe) | browse shell | A keyboard or screen-reader user loses their place on every click; Back leaves the shell; the title does not say where you are (SC 2.4.3, 2.4.2) | The breadcrumbs at the top of each view |
-| No `<h1>` (axe `page-has-heading-one`, advisory) | browse shell, with every face | Heading navigation has no top level | none |
+| The browse faces' small icon buttons (the "explain" button on each tree row) are under 24 by 24 CSS px with too little space around them (axe `target-size`, SC 2.5.8). The faces write the buttons; the shell's style sheet takes their padding away | browse shell, with the tree face | Hard to hit with a pointer, a finger or a tremor | The row's own link opens the entry |
 | Two unnamed `<nav>` landmarks per view (axe `landmark-unique`, advisory) | browse faces (`ikigai-browse`) | The two landmarks cannot be told apart | Their contents |
-| The refusal note is created with its text already in it; whether a screen reader announces a `role="status"` region that arrives filled has not been tested | browse shell | A refusal may go unannounced | The note is visible next to the control |
+| The tree face's "recent pull requests" heading is an `h4` straight under the shell's `h1` (axe `heading-order`, advisory) | browse faces (`ikigai-browse`) | Heading navigation shows a jump in levels | none needed to read it |
+| The run shortcut works only with JavaScript, so without it the hint is not shown | SPARQL editor, JavaScript off | none: the Run button submits the form | The Run button |
+| Whether a screen reader announces the refusal text written into the shell's standing status region has not been tested | browse shell | A refusal may go unannounced | The note is visible next to the control |
 | The shell needs JavaScript: without it the page shows "loading" and nothing else | browse shell | No browsing without JavaScript | none: a resource's own URL (`/{uri}`) shows one view without the shell, but its controls need JavaScript too |
-| No assistive-technology testing at all, and no accessibility check in CI | everything | Unknown; a regression would not be caught | Report what you meet (below) |
+| No assistive-technology testing at all; CI pins only the facts its tests name | everything | Unknown; a regression in anything else would not be caught | Report what you meet (below) |
 
 No list like this is complete. Please report what you find.
 
@@ -206,7 +205,8 @@ added, after a reported barrier is fixed, and before any conformance claim.
 |---|---|---|
 | 2026-08-09 | Syntax colors from the kernel-served theme stylesheet, which follows the color scheme | PR #8 |
 | 2026-10-14 | A refused affordance says why, in a `role="status"` note beside the control; a 403 marks the control disabled | PR #25 |
-| 2026-10-15 | This file, with the first axe run and its findings | this pull request |
+| 2026-10-15 | This file, with the first axe run and its findings | PR #27 |
+| 2026-11-02 | Fixed: `lang` on every page; a label for the query field; editor text, comment color, border and a focus ring at the contrast floors; the query visible without JavaScript; the shortcut described in words for the platform; the index's viewport, `<main>` and reflow at 320 px; in the shell an `h1`, focus, title and URL that follow each view (Back stays in the shell), and refusals announced through a standing status region. Found and listed: the faces' `target-size` and `heading-order` | ledger item 1645, this pull request |
 
 ## References
 
