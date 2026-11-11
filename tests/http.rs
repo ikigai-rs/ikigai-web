@@ -628,6 +628,40 @@ fn non_urn_paths_are_not_resolvable() {
     assert_eq!(status, 404);
 }
 
+/// A request target that is not a path is refused, never mapped (audit #3460). The face read
+/// the IRI as "the target minus its first byte", trusting a leading `/` nobody checked: an
+/// empty target or one opening on a multi-byte character panicked the connection's task (no
+/// answer at all), and `xurn:hello` resolved `urn:hello`, a name no path spelled.
+#[test]
+fn a_target_that_is_not_a_path_is_refused() {
+    for target in [
+        "",
+        "urn:hello",
+        "xurn:hello",
+        "\u{e9}urn:hello",
+        "*",
+        "http://t/urn:hello",
+    ] {
+        let response = {
+            let mut stream = TcpStream::connect(server_addr()).unwrap();
+            stream
+                .write_all(format!("GET {target} HTTP/1.1\r\nHost: t\r\n\r\n").as_bytes())
+                .unwrap();
+            let mut response = Vec::new();
+            stream.read_to_end(&mut response).unwrap();
+            String::from_utf8_lossy(&response).into_owned()
+        };
+        assert!(
+            response.starts_with("HTTP/1.1 400 "),
+            "target {target:?}: {response}"
+        );
+        assert!(
+            !response.contains("hello\n") && !response.ends_with("hello"),
+            "{response}"
+        );
+    }
+}
+
 /// The face never widens the verb: a GET cannot mutate even a Sink-only
 /// endpoint (the annotation echo errors on non-Sink verbs → 500, not 200).
 #[test]

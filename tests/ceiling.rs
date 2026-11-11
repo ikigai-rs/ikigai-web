@@ -601,3 +601,112 @@ fn help_names_the_ceiling_and_the_browse_only_example() {
         assert!(stdout.contains(scope), "{stdout}");
     }
 }
+
+/// ★ DNS rebinding (audit #3460): on loopback every request is issued as root, and a page on
+/// another site reaches this door by rebinding its own name to 127.0.0.1. The browser then
+/// treats the answer as same-origin and the page reads it. What the browser cannot hide is the
+/// name it used: `Host` is the attacker's. Before the door checked it, each request below
+/// answered 200 with the ledger.
+#[test]
+fn a_loopback_face_refuses_a_foreign_host_before_it_reads_as_root() {
+    let face = spawn_face("127.0.0.1", Ceiling::unset());
+    let port = face.addr.port();
+    for host in [
+        format!("attacker.example:{port}"),
+        "attacker.example".to_string(),
+        format!("localhost.attacker.example:{port}"),
+        format!("127.0.0.1.attacker.example:{port}"),
+        "t".to_string(),
+    ] {
+        for path in [
+            "/urn:iki:ledger:items",
+            "/k/source%20urn:iki:ledger:items",
+            "/meta/urn:iki:ledger:items",
+            "/",
+        ] {
+            let (status, body) = roundtrip(
+                face.addr,
+                &format!("GET {path} HTTP/1.1\r\nHost: {host}\r\n\r\n"),
+            );
+            assert_eq!(status, 421, "Host {host}, {path}: {body}");
+            assert!(
+                !body.contains(LEDGER_SECRET) && !body.contains(REPO_LIST_SECRET),
+                "Host {host}, {path} read as root: {body}"
+            );
+        }
+        let (status, body) = roundtrip(
+            face.addr,
+            &format!("GET /sparql?query={SELECT_G} HTTP/1.1\r\nHost: {host}\r\n{TSV}\r\n"),
+        );
+        assert_eq!(status, 421, "Host {host}, /sparql: {body}");
+        assert!(!body.contains(LEDGER_GRAPH), "{body}");
+    }
+    // The door's own names still read, with any port (an `ssh -L` forward keeps the name and
+    // changes the port), in any case, and with no `Host` at all (HTTP/1.0 tools; a browser
+    // always sends one).
+    for host in [
+        format!("Host: 127.0.0.1:{port}\r\n"),
+        format!("Host: localhost:{port}\r\n"),
+        "Host: LocalHost:9000\r\n".to_string(),
+        "Host: 127.0.0.1\r\n".to_string(),
+        String::new(),
+    ] {
+        let (status, body) = roundtrip(
+            face.addr,
+            &format!("GET /urn:iki:ledger:items HTTP/1.1\r\n{host}\r\n"),
+        );
+        assert_eq!(status, 200, "{host:?}: {body}");
+        assert!(body.contains(LEDGER_SECRET), "{host:?}: {body}");
+    }
+}
+
+/// A `prefer` mount whose peer is down answers 503, and the answer names no filesystem path
+/// (audit #3460): the socket sits under the owner's home, and the 503 goes to whoever asked,
+/// the network included. Before, the body was `unavailable: /…/gonk.sock: No such file or
+/// directory`, and the mount's `/meta/` placeholder carried the same path.
+#[test]
+fn a_dead_mount_answers_without_naming_its_socket() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = dir.path().join("absent-peer.sock");
+    let kernel = compose(vec![parse_mount_line(&format!(
+        "prefer urn:repo:={}",
+        socket.display()
+    ))
+    .expect("mount")])
+    .expect("a prefer mount composes without dialing");
+    let kernel = Arc::new(kernel);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async move {
+            let listener = ikigai_web_server::serve::bind("0.0.0.0:0".parse().unwrap())
+                .await
+                .expect("bind");
+            tx.send(listener.local_addr().expect("addr").port())
+                .expect("send");
+            let ceiling = Ceiling::scoped(BROWSE_ONLY).expect("a valid ceiling");
+            ikigai_web_server::serve::serve(kernel, listener, ceiling).await
+        })
+    });
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{}", rx.recv().expect("port"))
+        .parse()
+        .expect("addr");
+    let tmp = dir.path().display().to_string();
+    for path in [
+        "/urn:repo:demo:tree",
+        "/k/source%20urn:repo:demo:tree",
+        "/meta/urn:repo:demo:tree",
+    ] {
+        let (status, body) = get(addr, path, "");
+        assert!(
+            !body.contains(&tmp) && !body.contains("absent-peer.sock"),
+            "{path} named the socket: {body}"
+        );
+        if path != "/meta/urn:repo:demo:tree" {
+            assert_eq!(status, 503, "{path}: {body}");
+        }
+    }
+}
