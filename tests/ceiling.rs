@@ -252,7 +252,7 @@ fn roundtrip(addr: std::net::SocketAddr, request: &str) -> (u16, String) {
 fn get(addr: std::net::SocketAddr, path: &str, headers: &str) -> (u16, String) {
     roundtrip(
         addr,
-        &format!("GET {path} HTTP/1.1\r\nHost: t\r\n{headers}\r\n"),
+        &format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n{headers}\r\n"),
     )
 }
 
@@ -280,7 +280,7 @@ fn unset_on_loopback_is_root_and_the_fixture_serves_everything() {
     );
     let (status, _) = roundtrip(
         face.addr,
-        "HEAD /urn:iki:ledger:items HTTP/1.1\r\nHost: t\r\n\r\n",
+        "HEAD /urn:iki:ledger:items HTTP/1.1\r\nHost: localhost\r\n\r\n",
     );
     assert_eq!(status, 200, "root confirms the ledger exists");
     let (status, body) = get(face.addr, "/", "Accept: text/html\r\n");
@@ -338,31 +338,31 @@ fn no_route_header_or_parameter_reaches_past_the_ceiling() {
     for (what, request) in [
         (
             "GET /{uri}",
-            "GET /urn:iki:ledger:items HTTP/1.1\r\nHost: t\r\n\r\n".to_string(),
+            "GET /urn:iki:ledger:items HTTP/1.1\r\nHost: localhost\r\n\r\n".to_string(),
         ),
         (
             "GET /{uri} with an explicit as=",
-            "GET /urn:iki:ledger:items?as=text/turtle HTTP/1.1\r\nHost: t\r\n\r\n".to_string(),
+            "GET /urn:iki:ledger:items?as=text/turtle HTTP/1.1\r\nHost: localhost\r\n\r\n".to_string(),
         ),
         (
             "GET /{uri} with a cap= parameter",
-            "GET /urn:iki:ledger:items?cap=root&capability=root HTTP/1.1\r\nHost: t\r\n\r\n"
+            "GET /urn:iki:ledger:items?cap=root&capability=root HTTP/1.1\r\nHost: localhost\r\n\r\n"
                 .to_string(),
         ),
         (
             "GET /{uri} with credential-shaped headers",
-            "GET /urn:iki:ledger:items HTTP/1.1\r\nHost: t\r\nAuthorization: Bearer root\r\n\
+            "GET /urn:iki:ledger:items HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer root\r\n\
              Cookie: cap=root\r\nX-Capability: root\r\n\r\n"
                 .to_string(),
         ),
         (
             "GET /k/source",
-            "GET /k/source%20urn:iki:ledger:items HTTP/1.1\r\nHost: t\r\n\r\n".to_string(),
+            "GET /k/source%20urn:iki:ledger:items HTTP/1.1\r\nHost: localhost\r\n\r\n".to_string(),
         ),
         (
             "GET /k/source with k=v args",
             "GET /k/source%20urn:iki:ledger:items%20cap=root%20as=text/html HTTP/1.1\r\n\
-             Host: t\r\n\r\n"
+             Host: localhost\r\n\r\n"
                 .to_string(),
         ),
     ] {
@@ -382,7 +382,7 @@ fn no_route_header_or_parameter_reaches_past_the_ceiling() {
         (
             "GET /sparql naming the ledger graph",
             format!(
-                "GET /sparql?query={SELECT_G}&graph={LEDGER_GRAPH} HTTP/1.1\r\nHost: t\r\n{TSV}\r\n"
+                "GET /sparql?query={SELECT_G}&graph={LEDGER_GRAPH} HTTP/1.1\r\nHost: localhost\r\n{TSV}\r\n"
             ),
         ),
         ("POST /sparql naming the ledger graph", {
@@ -391,7 +391,7 @@ fn no_route_header_or_parameter_reaches_past_the_ceiling() {
                 LEDGER_GRAPH.replace(':', "%3A")
             );
             format!(
-                "POST /sparql HTTP/1.1\r\nHost: t\r\n{TSV}\
+                "POST /sparql HTTP/1.1\r\nHost: localhost\r\n{TSV}\
                      Content-Type: application/x-www-form-urlencoded\r\n\
                      Content-Length: {}\r\n\r\n{body}",
                 body.len()
@@ -410,7 +410,7 @@ fn no_route_header_or_parameter_reaches_past_the_ceiling() {
     // root answers 200 here, see the control test).
     let (status, _) = roundtrip(
         face.addr,
-        "HEAD /urn:iki:ledger:items HTTP/1.1\r\nHost: t\r\n\r\n",
+        "HEAD /urn:iki:ledger:items HTTP/1.1\r\nHost: localhost\r\n\r\n",
     );
     assert_eq!(status, 403, "HEAD confirmed or denied past the ceiling");
 
@@ -419,7 +419,7 @@ fn no_route_header_or_parameter_reaches_past_the_ceiling() {
     let (status, body) = roundtrip(
         face.addr,
         &format!(
-            "POST /sparql HTTP/1.1\r\nHost: t\r\n{TSV}Content-Type: application/sparql-query\r\n\
+            "POST /sparql HTTP/1.1\r\nHost: localhost\r\n{TSV}Content-Type: application/sparql-query\r\n\
              Content-Length: {}\r\n\r\n{query}",
             query.len()
         ),

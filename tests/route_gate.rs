@@ -196,7 +196,7 @@ fn post(addr: std::net::SocketAddr, path: &str, body: &str) -> (u16, String) {
     roundtrip(
         addr,
         &format!(
-            "POST {path} HTTP/1.1\r\nHost: t\r\nContent-Type: text/plain\r\n\
+            "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: text/plain\r\n\
              Content-Length: {}\r\n\r\n{body}",
             body.len()
         ),
@@ -287,7 +287,7 @@ fn every_refusal_happens_in_front_of_the_kernel() {
         let (status, _) = roundtrip(
             server.addr,
             &format!(
-                "{request} HTTP/1.1\r\nHost: t\r\nContent-Type: text/plain\r\n\
+                "{request} HTTP/1.1\r\nHost: localhost\r\nContent-Type: text/plain\r\n\
                  Content-Length: {}\r\n\r\n{BODY}",
                 BODY.len()
             ),
@@ -298,7 +298,7 @@ fn every_refusal_happens_in_front_of_the_kernel() {
     // never a write.
     let (status, _) = roundtrip(
         server.addr,
-        "GET /urn:iki:annotation HTTP/1.1\r\nHost: t\r\n\r\n",
+        "GET /urn:iki:annotation HTTP/1.1\r\nHost: localhost\r\n\r\n",
     );
     assert_eq!(
         status, 500,

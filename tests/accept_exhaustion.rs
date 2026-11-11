@@ -312,7 +312,7 @@ fn connect(socket: &OwnedFd, addr: SocketAddr) {
     assert_eq!(rc, 0, "connect: {}", std::io::Error::last_os_error());
 }
 
-const REQUEST: &[u8] = b"GET / HTTP/1.1\r\nHost: test\r\n\r\n";
+const REQUEST: &[u8] = b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
 
 /// Read one response; true when it is HTTP.
 fn answered(client: &mut TcpStream) -> bool {

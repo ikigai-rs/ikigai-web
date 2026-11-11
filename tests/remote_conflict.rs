@@ -204,11 +204,17 @@ fn roundtrip(addr: std::net::SocketAddr, request: &str) -> (u16, String) {
 }
 
 fn get(addr: std::net::SocketAddr) -> (u16, String) {
-    roundtrip(addr, "GET /urn:game:board HTTP/1.1\r\nHost: t\r\n\r\n")
+    roundtrip(
+        addr,
+        "GET /urn:game:board HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    )
 }
 
 fn head(addr: std::net::SocketAddr) -> (u16, String) {
-    roundtrip(addr, "HEAD /urn:game:board HTTP/1.1\r\nHost: t\r\n\r\n")
+    roundtrip(
+        addr,
+        "HEAD /urn:game:board HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    )
 }
 
 fn post(addr: std::net::SocketAddr) -> (u16, String) {
@@ -216,7 +222,7 @@ fn post(addr: std::net::SocketAddr) -> (u16, String) {
     roundtrip(
         addr,
         &format!(
-            "POST /urn:iki:annotation:taken HTTP/1.1\r\nHost: t\r\n\
+            "POST /urn:iki:annotation:taken HTTP/1.1\r\nHost: localhost\r\n\
              Content-Type: application/x-www-form-urlencoded\r\n\
              Content-Length: {}\r\n\r\n{form}",
             form.len()

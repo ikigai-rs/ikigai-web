@@ -252,7 +252,7 @@ fn roundtrip(request: &str) -> (u16, Vec<(String, String)>, Vec<u8>) {
 
 fn get(path_and_headers: &str) -> (u16, Vec<(String, String)>, Vec<u8>) {
     roundtrip(&format!(
-        "GET {path_and_headers} HTTP/1.1\r\nHost: t\r\n\r\n"
+        "GET {path_and_headers} HTTP/1.1\r\nHost: localhost\r\n\r\n"
     ))
 }
 
@@ -278,7 +278,7 @@ fn get_resolves_source_default_face() {
 #[test]
 fn browser_accept_selects_the_html_face() {
     let (status, headers, body) = roundtrip(
-        "GET /urn:hello HTTP/1.1\r\nHost: t\r\n\
+        "GET /urn:hello HTTP/1.1\r\nHost: localhost\r\n\
          Accept: text/html,application/xhtml+xml,*/*;q=0.8\r\n\r\n",
     );
     assert_eq!(status, 200);
@@ -292,7 +292,7 @@ fn browser_accept_selects_the_html_face() {
 #[test]
 fn turtle_via_accept_header() {
     let (status, headers, body) =
-        roundtrip("GET /urn:hello HTTP/1.1\r\nHost: t\r\nAccept: text/turtle\r\n\r\n");
+        roundtrip("GET /urn:hello HTTP/1.1\r\nHost: localhost\r\nAccept: text/turtle\r\n\r\n");
     assert_eq!(status, 200);
     assert_eq!(
         header(&headers, "content-type"),
@@ -303,8 +303,9 @@ fn turtle_via_accept_header() {
 
 #[test]
 fn explicit_as_query_arg_wins_over_accept() {
-    let (_, headers, _) =
-        roundtrip("GET /urn:hello?as=text/turtle HTTP/1.1\r\nHost: t\r\nAccept: text/html\r\n\r\n");
+    let (_, headers, _) = roundtrip(
+        "GET /urn:hello?as=text/turtle HTTP/1.1\r\nHost: localhost\r\nAccept: text/html\r\n\r\n",
+    );
     assert_eq!(
         header(&headers, "content-type"),
         Some("text/turtle; charset=utf-8")
@@ -346,7 +347,7 @@ fn a_matching_if_none_match_gets_a_bodyless_304() {
     assert!(!body.is_empty());
 
     let (status, headers, body) = roundtrip(&format!(
-        "GET /urn:pure HTTP/1.1\r\nHost: t\r\nIf-None-Match: {etag}\r\n\r\n"
+        "GET /urn:pure HTTP/1.1\r\nHost: localhost\r\nIf-None-Match: {etag}\r\n\r\n"
     ));
     assert_eq!(status, 304);
     assert!(body.is_empty(), "a 304 carries no body");
@@ -360,13 +361,13 @@ fn a_matching_if_none_match_gets_a_bodyless_304() {
     // Weak comparison and `*` are both hits (RFC 9110 §13.1.2).
     assert_eq!(
         roundtrip(&format!(
-            "GET /urn:pure HTTP/1.1\r\nHost: t\r\nIf-None-Match: W/{etag}\r\n\r\n"
+            "GET /urn:pure HTTP/1.1\r\nHost: localhost\r\nIf-None-Match: W/{etag}\r\n\r\n"
         ))
         .0,
         304
     );
     assert_eq!(
-        roundtrip("GET /urn:pure HTTP/1.1\r\nHost: t\r\nIf-None-Match: *\r\n\r\n").0,
+        roundtrip("GET /urn:pure HTTP/1.1\r\nHost: localhost\r\nIf-None-Match: *\r\n\r\n").0,
         304
     );
 }
@@ -374,7 +375,7 @@ fn a_matching_if_none_match_gets_a_bodyless_304() {
 #[test]
 fn a_stale_if_none_match_gets_the_full_body() {
     let (status, headers, body) = roundtrip(
-        "GET /urn:pure HTTP/1.1\r\nHost: t\r\n\
+        "GET /urn:pure HTTP/1.1\r\nHost: localhost\r\n\
          If-None-Match: \"b3:0000000000000000\"\r\n\r\n",
     );
     assert_eq!(status, 200);
@@ -388,16 +389,17 @@ fn a_stale_if_none_match_gets_the_full_body() {
 /// point is that the tags move together with the face.
 #[test]
 fn two_faces_of_one_resource_carry_different_etags() {
-    let (_, html, _) = roundtrip("GET /urn:hello HTTP/1.1\r\nHost: t\r\nAccept: text/html\r\n\r\n");
+    let (_, html, _) =
+        roundtrip("GET /urn:hello HTTP/1.1\r\nHost: localhost\r\nAccept: text/html\r\n\r\n");
     let (_, turtle, _) =
-        roundtrip("GET /urn:hello HTTP/1.1\r\nHost: t\r\nAccept: text/turtle\r\n\r\n");
+        roundtrip("GET /urn:hello HTTP/1.1\r\nHost: localhost\r\nAccept: text/turtle\r\n\r\n");
     let html_tag = header(&html, "etag").unwrap();
     let turtle_tag = header(&turtle, "etag").unwrap();
     assert_ne!(html_tag, turtle_tag);
     assert_eq!(header(&html, "vary"), Some("Accept"));
     // And the HTML face's own tag does not validate the Turtle face.
     let (status, _, _) = roundtrip(&format!(
-        "GET /urn:hello HTTP/1.1\r\nHost: t\r\nAccept: text/turtle\r\n\
+        "GET /urn:hello HTTP/1.1\r\nHost: localhost\r\nAccept: text/turtle\r\n\
          If-None-Match: {html_tag}\r\n\r\n"
     ));
     assert_eq!(status, 200);
@@ -413,7 +415,7 @@ fn the_k_adapter_revalidates_like_the_direct_route() {
     assert_eq!(header(&headers, "cache-control"), Some("public, no-cache"));
     let etag = header(&headers, "etag").unwrap().to_string();
     let (status, _, body) = roundtrip(&format!(
-        "GET /k/source%20urn:pure HTTP/1.1\r\nHost: t\r\nIf-None-Match: {etag}\r\n\r\n"
+        "GET /k/source%20urn:pure HTTP/1.1\r\nHost: localhost\r\nIf-None-Match: {etag}\r\n\r\n"
     ));
     assert_eq!(status, 304);
     assert!(body.is_empty());
@@ -421,10 +423,10 @@ fn the_k_adapter_revalidates_like_the_direct_route() {
 
 #[test]
 fn head_maps_to_exists() {
-    let (status, _, body) = roundtrip("HEAD /urn:hello HTTP/1.1\r\nHost: t\r\n\r\n");
+    let (status, _, body) = roundtrip("HEAD /urn:hello HTTP/1.1\r\nHost: localhost\r\n\r\n");
     assert_eq!(status, 200);
     assert!(body.is_empty());
-    let (status, _, body) = roundtrip("HEAD /urn:nowhere HTTP/1.1\r\nHost: t\r\n\r\n");
+    let (status, _, body) = roundtrip("HEAD /urn:nowhere HTTP/1.1\r\nHost: localhost\r\n\r\n");
     assert_eq!(status, 404);
     assert!(body.is_empty());
 }
@@ -453,7 +455,7 @@ fn a_conflict_answers_409_with_its_message() {
 
     let form = "body=mine";
     let (status, _, body) = roundtrip(&format!(
-        "POST /urn:iki:annotation:taken HTTP/1.1\r\nHost: t\r\n\
+        "POST /urn:iki:annotation:taken HTTP/1.1\r\nHost: localhost\r\n\
          Content-Type: application/x-www-form-urlencoded\r\n\
          Content-Length: {}\r\n\r\n{form}",
         form.len()
@@ -463,7 +465,7 @@ fn a_conflict_answers_409_with_its_message() {
     assert!(body.contains("1,1 is taken"), "body was: {body}");
 
     // HEAD carries the status and, as for every HEAD, no body.
-    let (status, _, body) = roundtrip("HEAD /urn:taken HTTP/1.1\r\nHost: t\r\n\r\n");
+    let (status, _, body) = roundtrip("HEAD /urn:taken HTTP/1.1\r\nHost: localhost\r\n\r\n");
     assert_eq!(status, 409);
     assert!(body.is_empty());
 }
@@ -472,7 +474,7 @@ fn a_conflict_answers_409_with_its_message() {
 fn post_form_body_maps_to_sink_args() {
     let form = "target=urn%3Arepo%3Ax%3Afile%3Aa.rs&body=nice+line&exact=let%20x";
     let (status, _, body) = roundtrip(&format!(
-        "POST /urn:iki:annotation HTTP/1.1\r\nHost: t\r\n\
+        "POST /urn:iki:annotation HTTP/1.1\r\nHost: localhost\r\n\
          Content-Type: application/x-www-form-urlencoded\r\n\
          Content-Length: {}\r\n\r\n{form}",
         form.len()
@@ -491,7 +493,7 @@ fn post_form_body_maps_to_sink_args() {
 fn post_raw_body_arrives_as_piped_content() {
     let note = "a raw note";
     let (status, _, body) = roundtrip(&format!(
-        "POST /urn:iki:annotation:abc?target=urn:repo:x:file:a.rs HTTP/1.1\r\nHost: t\r\n\
+        "POST /urn:iki:annotation:abc?target=urn:repo:x:file:a.rs HTTP/1.1\r\nHost: localhost\r\n\
          Content-Type: text/plain\r\nContent-Length: {}\r\n\r\n{note}",
         note.len()
     ));
@@ -514,7 +516,7 @@ fn the_annotation_family_reaches_the_sink_through_both_routes() {
         "/k/sink%20urn:iki:annotation",
     ] {
         let (status, _, body) = roundtrip(&format!(
-            "POST {path} HTTP/1.1\r\nHost: t\r\n\
+            "POST {path} HTTP/1.1\r\nHost: localhost\r\n\
              Content-Type: application/x-www-form-urlencoded\r\n\
              Content-Length: {}\r\n\r\n{form}",
             form.len()
@@ -545,7 +547,7 @@ fn the_legacy_annotation_spelling_is_refused_at_the_route() {
         "/k/sink%20urn:annotation",
     ] {
         let (status, headers, body) = roundtrip(&format!(
-            "POST {path} HTTP/1.1\r\nHost: t\r\n\
+            "POST {path} HTTP/1.1\r\nHost: localhost\r\n\
              Content-Type: application/x-www-form-urlencoded\r\n\
              Content-Length: {}\r\n\r\n{form}",
             form.len()
@@ -566,7 +568,7 @@ fn the_legacy_annotation_spelling_is_refused_at_the_route() {
 fn the_new_root_is_colon_anchored_at_the_route() {
     for path in ["/urn:annotationx", "/urn:iki:annotationx", "/urn:iki:hello"] {
         let (status, headers, _) = roundtrip(&format!(
-            "POST {path} HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n\r\n"
+            "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
         ));
         assert_eq!(status, 405, "for {path}");
         assert_eq!(header(&headers, "allow"), Some("GET, HEAD"), "for {path}");
@@ -576,7 +578,7 @@ fn the_new_root_is_colon_anchored_at_the_route() {
 #[test]
 fn post_outside_the_annotation_family_is_refused() {
     let (status, headers, _) =
-        roundtrip("POST /urn:hello HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n\r\n");
+        roundtrip("POST /urn:hello HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n");
     assert_eq!(status, 405);
     assert_eq!(header(&headers, "allow"), Some("GET, HEAD"));
 }
@@ -584,7 +586,7 @@ fn post_outside_the_annotation_family_is_refused() {
 #[test]
 fn unsupported_methods_get_405_with_allow() {
     let (status, headers, _) =
-        roundtrip("DELETE /urn:hello HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n\r\n");
+        roundtrip("DELETE /urn:hello HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n");
     assert_eq!(status, 405);
     assert_eq!(header(&headers, "allow"), Some("GET, HEAD, POST"));
 }
@@ -645,7 +647,7 @@ fn a_target_that_is_not_a_path_is_refused() {
         let response = {
             let mut stream = TcpStream::connect(server_addr()).unwrap();
             stream
-                .write_all(format!("GET {target} HTTP/1.1\r\nHost: t\r\n\r\n").as_bytes())
+                .write_all(format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
                 .unwrap();
             let mut response = Vec::new();
             stream.read_to_end(&mut response).unwrap();
@@ -688,7 +690,7 @@ fn k_adapter_sources_with_args() {
 fn k_adapter_sinks_annotation_forms() {
     let form = "target=urn%3Arepo%3Ax%3Afile%3Aa.rs&body=note&exact=let";
     let (status, _, body) = roundtrip(&format!(
-        "POST /k/sink%20urn:iki:annotation HTTP/1.1\r\nHost: t\r\n\
+        "POST /k/sink%20urn:iki:annotation HTTP/1.1\r\nHost: localhost\r\n\
          Content-Type: application/x-www-form-urlencoded\r\n\
          Content-Length: {}\r\n\r\n{form}",
         form.len()
@@ -702,8 +704,9 @@ fn k_adapter_sinks_annotation_forms() {
 /// family refuses, and GET cannot sink at all.
 #[test]
 fn k_adapter_keeps_the_write_surface() {
-    let (status, _, _) =
-        roundtrip("POST /k/sink%20urn:hello HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n\r\n");
+    let (status, _, _) = roundtrip(
+        "POST /k/sink%20urn:hello HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
+    );
     assert_eq!(status, 405);
     let (status, _, _) = get("/k/sink%20urn:iki:annotation");
     assert_eq!(status, 405);
@@ -821,8 +824,9 @@ fn meta_route_answers_the_contract_not_the_data() {
 /// `?as=` wins over `Accept`.
 #[test]
 fn meta_route_negotiates_its_faces() {
-    let (status, headers, body) =
-        roundtrip("GET /meta/urn:hello HTTP/1.1\r\nHost: t\r\nAccept: application/json\r\n\r\n");
+    let (status, headers, body) = roundtrip(
+        "GET /meta/urn:hello HTTP/1.1\r\nHost: localhost\r\nAccept: application/json\r\n\r\n",
+    );
     assert_eq!(status, 200);
     assert_eq!(header(&headers, "content-type"), Some("application/json"));
     let body = String::from_utf8(body).unwrap();
@@ -830,7 +834,7 @@ fn meta_route_negotiates_its_faces() {
     assert!(body.contains("\"hello\""), "meta was: {body}");
 
     let (status, headers, _) = roundtrip(
-        "GET /meta/urn:hello HTTP/1.1\r\nHost: t\r\n\
+        "GET /meta/urn:hello HTTP/1.1\r\nHost: localhost\r\n\
          Accept: text/html,application/xhtml+xml,*/*;q=0.8\r\n\r\n",
     );
     assert_eq!(status, 200);
@@ -842,7 +846,7 @@ fn meta_route_negotiates_its_faces() {
     );
 
     let (_, headers, _) = roundtrip(
-        "GET /meta/urn:hello?as=text/turtle HTTP/1.1\r\nHost: t\r\nAccept: text/html\r\n\r\n",
+        "GET /meta/urn:hello?as=text/turtle HTTP/1.1\r\nHost: localhost\r\nAccept: text/html\r\n\r\n",
     );
     assert_eq!(
         header(&headers, "content-type"),
@@ -856,14 +860,15 @@ fn meta_route_negotiates_its_faces() {
 fn meta_route_is_read_only_and_types_its_errors() {
     assert_eq!(get("/meta/urn:nonesuch").0, 404);
     assert_eq!(get("/meta/not-an-iri").0, 404);
-    let (status, headers, _) =
-        roundtrip("POST /meta/urn:iki:annotation HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n\r\n");
+    let (status, headers, _) = roundtrip(
+        "POST /meta/urn:iki:annotation HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
+    );
     assert_eq!(status, 405);
     assert_eq!(header(&headers, "allow"), Some("GET"));
     // Off loopback the read surface includes it.
     let (status, _, body) = roundtrip_at(
         readonly_addr(),
-        "GET /meta/urn:hello HTTP/1.1\r\nHost: t\r\n\r\n",
+        "GET /meta/urn:hello HTTP/1.1\r\nHost: localhost\r\n\r\n",
     );
     assert_eq!(status, 200);
     assert!(String::from_utf8(body).unwrap().contains("hello"));
@@ -919,7 +924,7 @@ fn sparql_forwards_graph_and_joins_repeats() {
     // A POSTed form carries repeats too, and its fields replace the URL's.
     let form = format!("query={query}&graph=urn:g:c&graph=urn:g:d");
     let (status, _, body) = roundtrip(&format!(
-        "POST /sparql?graph=urn:g:url HTTP/1.1\r\nHost: t\r\n\
+        "POST /sparql?graph=urn:g:url HTTP/1.1\r\nHost: localhost\r\n\
          Content-Type: application/x-www-form-urlencoded\r\n\
          Content-Length: {}\r\n\r\n{form}",
         form.len()
@@ -933,7 +938,7 @@ fn sparql_forwards_graph_and_joins_repeats() {
     // A raw POST body is the query; `graph=` rides the URL.
     let raw = "SELECT ?s WHERE { ?s ?p ?o }";
     let (_, _, body) = roundtrip(&format!(
-        "POST /sparql?graph=urn:g:e HTTP/1.1\r\nHost: t\r\n\
+        "POST /sparql?graph=urn:g:e HTTP/1.1\r\nHost: localhost\r\n\
          Content-Type: application/sparql-query\r\nContent-Length: {}\r\n\r\n{raw}",
         raw.len()
     ));
@@ -947,7 +952,7 @@ fn sparql_forwards_graph_and_joins_repeats() {
 fn sparql_editor_page_keeps_the_graph() {
     let query = ikigai_fn::html::url_segment("SELECT ?s WHERE { ?s ?p ?o }");
     let (status, _, body) = roundtrip(&format!(
-        "GET /sparql?query={query}&graph=urn:g:a&graph=urn:g:b HTTP/1.1\r\nHost: t\r\n\
+        "GET /sparql?query={query}&graph=urn:g:a&graph=urn:g:b HTTP/1.1\r\nHost: localhost\r\n\
          Accept: text/html\r\n\r\n"
     ));
     assert_eq!(status, 200);
@@ -972,7 +977,7 @@ fn sparql_editor_page_keeps_the_graph() {
 fn sparql_conneg_selects_faces_and_forms_route() {
     let query = ikigai_fn::html::url_segment("ASK { ?s ?p ?o }");
     let (status, headers, body) = roundtrip(&format!(
-        "GET /sparql?query={query} HTTP/1.1\r\nHost: t\r\nAccept: text/csv\r\n\r\n"
+        "GET /sparql?query={query} HTTP/1.1\r\nHost: localhost\r\nAccept: text/csv\r\n\r\n"
     ));
     assert_eq!(status, 200);
     assert_eq!(
@@ -997,7 +1002,7 @@ fn sparql_conneg_selects_faces_and_forms_route() {
 fn sparql_explicit_as_wins_over_accept() {
     let query = ikigai_fn::html::url_segment("SELECT ?s WHERE { ?s ?p ?o }");
     let (status, headers, _) = roundtrip(&format!(
-        "GET /sparql?query={query}&as=text/csv HTTP/1.1\r\nHost: t\r\nAccept: text/html\r\n\r\n"
+        "GET /sparql?query={query}&as=text/csv HTTP/1.1\r\nHost: localhost\r\nAccept: text/html\r\n\r\n"
     ));
     assert_eq!(status, 200);
     assert_eq!(
@@ -1013,7 +1018,7 @@ fn sparql_explicit_as_wins_over_accept() {
 fn sparql_post_bodies_carry_the_query() {
     let query = "SELECT ?s WHERE { ?s ?p ?o }";
     let (status, headers, _) = roundtrip(&format!(
-        "POST /sparql HTTP/1.1\r\nHost: t\r\n\
+        "POST /sparql HTTP/1.1\r\nHost: localhost\r\n\
          Content-Type: application/sparql-query\r\nContent-Length: {}\r\n\r\n{query}",
         query.len()
     ));
@@ -1025,7 +1030,7 @@ fn sparql_post_bodies_carry_the_query() {
 
     let form = format!("query={}", ikigai_fn::html::url_segment(query));
     let (status, _, body) = roundtrip(&format!(
-        "POST /sparql HTTP/1.1\r\nHost: t\r\n\
+        "POST /sparql HTTP/1.1\r\nHost: localhost\r\n\
          Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{form}",
         form.len()
     ));
@@ -1059,7 +1064,7 @@ fn sparql_editor_page_prefills_and_renders_results() {
     let query = "SELECT ?s WHERE { ?s ?p ?o } # <tag> & \"quotes\"";
     let encoded = ikigai_fn::html::url_segment(query);
     let (status, headers, body) = roundtrip(&format!(
-        "GET /sparql?query={encoded} HTTP/1.1\r\nHost: t\r\nAccept: text/html\r\n\r\n"
+        "GET /sparql?query={encoded} HTTP/1.1\r\nHost: localhost\r\nAccept: text/html\r\n\r\n"
     ));
     assert_eq!(status, 200);
     assert_eq!(
@@ -1101,13 +1106,13 @@ fn sparql_editor_page_prefills_and_renders_results() {
 #[test]
 fn sparql_editor_page_handles_empty_and_bad_queries() {
     let (status, _, body) =
-        roundtrip("GET /sparql HTTP/1.1\r\nHost: t\r\nAccept: text/html\r\n\r\n");
+        roundtrip("GET /sparql HTTP/1.1\r\nHost: localhost\r\nAccept: text/html\r\n\r\n");
     assert_eq!(status, 200);
     assert!(String::from_utf8(body).unwrap().contains("<textarea"));
 
     let query = ikigai_fn::html::url_segment("DROP GRAPH <urn:g>");
     let (status, _, body) = roundtrip(&format!(
-        "GET /sparql?query={query} HTTP/1.1\r\nHost: t\r\nAccept: text/html\r\n\r\n"
+        "GET /sparql?query={query} HTTP/1.1\r\nHost: localhost\r\nAccept: text/html\r\n\r\n"
     ));
     assert_eq!(status, 200);
     let body = String::from_utf8(body).unwrap();
@@ -1118,7 +1123,7 @@ fn sparql_editor_page_handles_empty_and_bad_queries() {
 #[test]
 fn sparql_rejects_other_methods() {
     let (status, headers, _) =
-        roundtrip("DELETE /sparql HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n\r\n");
+        roundtrip("DELETE /sparql HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n");
     assert_eq!(status, 405);
     assert_eq!(header(&headers, "allow"), Some("GET, POST"));
 }
@@ -1143,7 +1148,7 @@ fn readonly_bind_disables_the_write_surface() {
         let (status, headers, body) = roundtrip_at(
             addr,
             &format!(
-                "POST {path} HTTP/1.1\r\nHost: t\r\n\
+                "POST {path} HTTP/1.1\r\nHost: localhost\r\n\
                  Content-Type: application/x-www-form-urlencoded\r\n\
                  Content-Length: {}\r\n\r\n{form}",
                 form.len()
@@ -1158,7 +1163,7 @@ fn readonly_bind_disables_the_write_surface() {
     // Other methods refuse at the same gate.
     let (status, _, _) = roundtrip_at(
         addr,
-        "DELETE /urn:hello HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n\r\n",
+        "DELETE /urn:hello HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
     );
     assert_eq!(status, 403);
 }
@@ -1169,22 +1174,24 @@ fn readonly_bind_disables_the_write_surface() {
 #[test]
 fn readonly_bind_still_reads() {
     let addr = readonly_addr();
-    let (status, _, body) = roundtrip_at(addr, "GET /urn:hello HTTP/1.1\r\nHost: t\r\n\r\n");
+    let (status, _, body) =
+        roundtrip_at(addr, "GET /urn:hello HTTP/1.1\r\nHost: localhost\r\n\r\n");
     assert_eq!(status, 200);
     assert_eq!(body, b"hello");
-    let (status, _, body) = roundtrip_at(addr, "HEAD /urn:hello HTTP/1.1\r\nHost: t\r\n\r\n");
+    let (status, _, body) =
+        roundtrip_at(addr, "HEAD /urn:hello HTTP/1.1\r\nHost: localhost\r\n\r\n");
     assert_eq!(status, 200);
     assert!(body.is_empty());
     let (status, _, _) = roundtrip_at(
         addr,
-        "GET /k/source%20urn:hello%20as=text/html HTTP/1.1\r\nHost: t\r\n\r\n",
+        "GET /k/source%20urn:hello%20as=text/html HTTP/1.1\r\nHost: localhost\r\n\r\n",
     );
     assert_eq!(status, 200);
     let query = "SELECT ?s WHERE { ?s ?p ?o }";
     let (status, headers, _) = roundtrip_at(
         addr,
         &format!(
-            "POST /sparql HTTP/1.1\r\nHost: t\r\n\
+            "POST /sparql HTTP/1.1\r\nHost: localhost\r\n\
              Content-Type: application/sparql-query\r\nContent-Length: {}\r\n\r\n{query}",
             query.len()
         ),
@@ -1198,7 +1205,7 @@ fn readonly_bind_still_reads() {
     let update = ikigai_fn::html::url_segment("INSERT DATA { <urn:x> <urn:p> 1 }");
     let (status, _, _) = roundtrip_at(
         addr,
-        &format!("GET /sparql?query={update} HTTP/1.1\r\nHost: t\r\n\r\n"),
+        &format!("GET /sparql?query={update} HTTP/1.1\r\nHost: localhost\r\n\r\n"),
     );
     assert_eq!(status, 400);
 }
@@ -1214,12 +1221,12 @@ fn readonly_shell_hides_the_annotate_form_loopback_does_not() {
     const READONLY: &str = "<body class=\"readonly\">";
     let (_, _, style) = roundtrip_at(
         readonly_addr(),
-        "GET /browse.css HTTP/1.1\r\nHost: t\r\n\r\n",
+        "GET /browse.css HTTP/1.1\r\nHost: localhost\r\n\r\n",
     );
     assert!(String::from_utf8(style).unwrap().contains(HIDE));
     let (status, _, body) = roundtrip_at(
         readonly_addr(),
-        "GET /browse/urn:repo:demo:tree HTTP/1.1\r\nHost: t\r\n\r\n",
+        "GET /browse/urn:repo:demo:tree HTTP/1.1\r\nHost: localhost\r\n\r\n",
     );
     assert_eq!(status, 200);
     assert!(
@@ -1263,7 +1270,8 @@ fn fixture_sanity_direct_issue() {
 // ---------------------------------------------------------------------------
 
 fn editor_html() -> String {
-    let (_, _, body) = roundtrip("GET /sparql HTTP/1.1\r\nHost: t\r\nAccept: text/html\r\n\r\n");
+    let (_, _, body) =
+        roundtrip("GET /sparql HTTP/1.1\r\nHost: localhost\r\nAccept: text/html\r\n\r\n");
     String::from_utf8(body).unwrap()
 }
 
