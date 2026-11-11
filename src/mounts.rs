@@ -213,8 +213,19 @@ impl LazyIpcResolver {
             return Ok(resolver);
         }
         // A prefer mount forwards IRIs unchanged, so it speaks verbatim.
-        let resolver = connect(&self.target, ikigai_ipc::HelloMode::Verbatim)
-            .map_err(|e| ikigai_core::Error::Unavailable(format!("{}: {e}", self.target)))?;
+        //
+        // ★ The error names no path (audit #3460). It is the answer to whoever asked, the
+        // network included off loopback, and the socket sits under the owner's home. The
+        // dial's own message can carry the path too (`the kernel server at {path} hung up
+        // …`), so the answer carries only its kind; the operator's log gets all of it, and
+        // the startup banner already printed which target each prefix mounts.
+        let resolver = connect(&self.target, ikigai_ipc::HelloMode::Verbatim).map_err(|e| {
+            eprintln!("ikigai-web: mount {}: {e}", self.target);
+            ikigai_core::Error::Unavailable(format!(
+                "the mounted peer did not answer ({})",
+                e.kind()
+            ))
+        })?;
         *self.inner.lock().unwrap() = Some(Arc::clone(&resolver));
         Ok(resolver)
     }
@@ -269,7 +280,11 @@ impl Resolver for LazyIpcResolver {
     fn transport(&self) -> String {
         match self.inner.lock().unwrap().clone() {
             Some(resolver) => resolver.transport(),
-            None => format!("{} · not connected", self.target),
+            // Path-free for the same reason as [`LazyIpcResolver::get`]'s error: this is the
+            // mount's origin label, which the peer's placeholders and status rows quote to
+            // the caller. It is read at compose time, before any dial, so it is the label
+            // every `prefer` mount carries; the real transport's own label is path-free too.
+            None => "ipc · unix domain socket (dialed on first use)".to_string(),
         }
     }
 }

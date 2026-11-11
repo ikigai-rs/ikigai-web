@@ -84,6 +84,9 @@ pub(crate) struct Face {
     /// This door's own origins, from the address it is bound to ([`door_origins`]): the only
     /// pages whose writes it admits ([`origin_refusal`]).
     origins: OriginCheck,
+    /// This door's own host names, from the same address ([`door_hosts`]): the only names a
+    /// request on loopback may be addressed to ([`host_refusal`]).
+    hosts: Vec<String>,
 }
 
 impl Face {
@@ -145,6 +148,7 @@ pub async fn serve_until_error(
         ceiling,
         posture,
         origins,
+        hosts: door_hosts(bound),
     });
     let mut backoff = accept::Backoff::default();
     loop {
@@ -222,6 +226,79 @@ pub fn door_origins(bound: std::net::SocketAddr) -> Vec<String> {
     } else {
         vec![literal(ip)]
     }
+}
+
+/// The host names a request to THIS door may carry in `Host` on a loopback bind: the hosts of
+/// [`door_origins`], with no port.
+///
+/// The port is not compared. What the check stops is DNS rebinding, where a page on another
+/// site rebinds its own name to loopback and reads this door as same-origin; the name in
+/// `Host` is the attacker's whatever the port, while an `ssh -L` forward or a proxy keeps the
+/// name and changes the port.
+///
+/// ```
+/// use ikigai_web_server::serve::door_hosts;
+/// assert_eq!(door_hosts("127.0.0.1:8642".parse().unwrap()), ["127.0.0.1", "localhost"]);
+/// assert_eq!(door_hosts("[::1]:8642".parse().unwrap()), ["[::1]", "localhost"]);
+/// ```
+pub fn door_hosts(bound: std::net::SocketAddr) -> Vec<String> {
+    door_origins(bound)
+        .iter()
+        .map(|origin| {
+            let authority = origin.strip_prefix("http://").unwrap_or(origin);
+            match authority.rsplit_once(':') {
+                Some((host, _port)) => host.to_string(),
+                None => authority.to_string(),
+            }
+        })
+        .collect()
+}
+
+/// The host part of a `Host` value, lowercased: the port and its colon dropped, an IPv6
+/// literal kept in its brackets.
+fn host_of(value: &str) -> String {
+    let value = value.trim().to_ascii_lowercase();
+    if value.starts_with('[') {
+        return match value.find(']') {
+            Some(end) => value[..=end].to_string(),
+            None => value,
+        };
+    }
+    match value.split_once(':') {
+        Some((host, _port)) => host.to_string(),
+        None => value,
+    }
+}
+
+/// The refusal for a request addressed to a name that is not this door's, or `None` to admit
+/// it (audit #3460).
+///
+/// On a loopback bind every request is issued as root ([`crate::ceiling`]), on the premise
+/// that only the machine's owner can reach the socket. DNS rebinding breaks that premise for
+/// reads: a page on another site resolves its own name to 127.0.0.1, the browser calls the
+/// answers same-origin, and the page reads the ledger. The [`origin_refusal`] gate does not
+/// see this, since a same-origin `GET` carries no `Origin`, but the browser always sends the
+/// name it used, so `Host` must be one of [`door_hosts`]. With no `Host` at all the request is
+/// admitted: a browser always sends one, and an HTTP/1.0 tool may not.
+///
+/// Off loopback the gate is not applied. Anyone on the network can read this door directly
+/// under its ceiling, so rebinding gives a page nothing it could not read anyway, and the LAN
+/// names an unspecified bind (`0.0.0.0`) answers to cannot be known from the socket.
+fn host_refusal(face: &Face, req: &HttpRequest) -> Option<Resp> {
+    if face.posture != Posture::LocalOwner {
+        return None;
+    }
+    let host = host_of(req.header("host")?);
+    if face.hosts.contains(&host) {
+        return None;
+    }
+    Some(error_resp(
+        421,
+        &format!(
+            "this door answers only to its own names ({}): the request named another host",
+            face.hosts.join(", ")
+        ),
+    ))
 }
 
 /// The refusal for a request another origin started, or `None` to admit it: the cli
@@ -332,6 +409,12 @@ async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, u16> {
     let mut parts = request_line.split(' ');
     let method = parts.next().ok_or(400u16)?.to_string();
     let target = parts.next().ok_or(400u16)?;
+    // The origin form only: a path. Every route below reads the IRI as the path after its
+    // leading `/`, so a target without one (empty, `*`, an absolute URL, a bare `urn:…`) is
+    // refused here rather than mapped to a name no path spelled.
+    if !target.starts_with('/') {
+        return Err(400u16);
+    }
     let (raw_path, raw_query) = match target.split_once('?') {
         Some((p, q)) => (p, Some(q)),
         None => (target, None),
@@ -601,6 +684,11 @@ fn post_allowed(uri: &str) -> bool {
 /// Dispatch one parsed request against the kernel.
 async fn respond(face: &Face, req: HttpRequest) -> Resp {
     let posture = face.posture;
+    // The name gate — first, before any route: on loopback every request is issued as root,
+    // so a request must be addressed to this door by one of its own names ([`host_refusal`]).
+    if let Some(refusal) = host_refusal(face, &req) {
+        return refusal;
+    }
     // The read-only gate — ONE choke point, before any route parsing, so no
     // later route (today's or a future one) can widen the surface by
     // forgetting a check. `POST /sparql` passes: its body is a query, and that
@@ -1379,6 +1467,7 @@ fn reason(status: u16) -> &'static str {
         405 => "Method Not Allowed",
         408 => "Request Timeout",
         413 => "Payload Too Large",
+        421 => "Misdirected Request",
         431 => "Request Header Fields Too Large",
         500 => "Internal Server Error",
         503 => "Service Unavailable",

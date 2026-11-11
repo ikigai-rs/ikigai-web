@@ -50,9 +50,17 @@ it. The browse shell also stops offering the annotate form off loopback
 ### The door: other origins, and what it relays
 
 A bind and a ceiling say nothing about a web page on ANOTHER site that points the
-owner's browser at this server. Two rules close that, both from the ecosystem's one
-implementation of them (the cli's `ikigai-web` library, ledger #1795/#1813):
+owner's browser at this server. Three rules close that; the last two come from the
+ecosystem's one implementation of them (the cli's `ikigai-web` library, ledger #1795/#1813):
 
+- **On loopback, a request must name this door** (audit #3460). Every loopback request
+  is root, and a page on another site can rebind its own DNS name to 127.0.0.1 and read
+  the answers as same-origin. The browser still sends the name it used, so `Host`, with
+  its port ignored, must be one of the bound address's hosts (`127.0.0.1` or `[::1]`, and
+  `localhost`). Any other name gets a `421 Misdirected Request` before any route runs. A
+  request with no `Host` is admitted, because a browser always sends one. Off loopback
+  the rule is not applied: anyone on the network can already read the door directly
+  under its ceiling.
 - **A write another origin started is refused** before any route: every method but
   GET, HEAD and OPTIONS goes through the library's `OriginCheck`. A present `Origin`
   must be this door's own (from the bound address: `http://127.0.0.1:{port}` and
