@@ -19,7 +19,7 @@ Adapted from the [ACCESSIBILITY.md template](https://github.com/mgifford/ACCESSI
 | Private channel | [private vulnerability reporting](https://github.com/ikigai-rs/ikigai-web/security/advisories/new), for anything security-sensitive |
 | Target | WCAG 2.2 Level AA |
 | Status | Evaluation in progress. No conformance claim. |
-| Last reviewed | 2026-11-02 |
+| Last reviewed | 2026-11-12 |
 | Next review | when a page's markup, style or script in `src/serve.rs` or `src/sparql.rs` changes, when the vendored htmx changes version, when a page is added, or when the browse faces it hosts change shape |
 
 ## Commitment
@@ -28,9 +28,10 @@ This server is how a person reads a kernel's resources in a browser: its reposit
 explanations and the shared RDF store. A barrier in its three pages keeps that person out of
 everything behind them. We aim at WCAG 2.2 AA for everything listed under "In scope". We prefer
 native HTML over scripted widgets (the SPARQL editor is a form with a textarea, not a vendored
-editor), check the pages a browser actually renders rather than the Rust strings that build them,
-and say plainly what has not been tested. CI checks the markup and colors the fixes below rely on
-(not a full accessibility check); the barriers still open are listed under "Known limitations".
+editor), would rather check the pages a browser renders than the Rust strings that build them,
+and say plainly what has not been tested. Today CI checks only the served markup, script text and
+colors the fixes below rely on (not a full accessibility check, and no browser); the barriers
+still open are listed under "Known limitations".
 
 ## Scope
 
@@ -65,57 +66,74 @@ and say plainly what has not been tested. CI checks the markup and colors the fi
 
 ## Conformance status
 
-**Evaluation in progress** against WCAG 2.2 AA. The second axe-core run in Chrome (2026-11-02)
-found no WCAG A or AA failure on the index or the editor; that run found undersized controls
-in the shell. A targeted follow-up with a tree fixture verified the shell fix described below.
-The remaining findings and gaps are listed under "Known limitations". CI pins the markup and colors behind
-the fixes, not the WCAG rules themselves, and **no screen reader has been used**. Do not infer a
+**Evaluation in progress** against WCAG 2.2 AA. No conformance claim. CI pins the markup, the
+script text and the colors behind the fixes listed under "Change history"; it does not run the
+pages in a browser, does not run axe or any other WCAG rule engine, and **no screen reader or
+other assistive technology has been used**. The browser runs made for earlier reviews are
+recorded below as Blocked with their dates, because CI does not repeat them. Do not infer a
 conformance claim from a green build or from this file.
 
-## Evidence
+## How it is tested
 
-Of the checks CI runs on every pull request, only `cargo test` touches the pages. Since
-2026-11-02 some of its tests are accessibility checks of one fact each (listed in the first row);
-they are not an accessibility audit. Everything else below was run by hand, for this file's
-reviews; none of it gates a merge.
+Every check this file names has a result: **Pass**, **Fail** or **Blocked**, with its evidence.
+A Pass covers only the stated check, never accessibility as a whole. Every Pass below was run on
+2026-11-12 on main at `3141026` with `cargo test --locked` (rustc and cargo 1.99.1, macOS):
+128 tests passed and 2 were ignored (child scenarios of `tests/accept_exhaustion.rs`, run by
+their parent test). CI (`.github/workflows/ci.yml`) runs the same suite on every pull request.
+These tests read the HTML, CSS and script the server sends; they render nothing and execute no
+script in a browser.
 
-| Check | Version | What it covers | What it does not cover |
-|---|---|---|---|
-| `cargo test` (`tests/http.rs`, `src/sparql.rs`, CI on every pull request) | the crate's tests | That a browser's `Accept` gets the HTML face, the shell hosts the faces, and the editor keeps its graph narrowing. And, since 2026-11-02: every page has `lang`; the query field has a label and a worded shortcut hint; the index has a viewport and a `<main>`, and wraps long scopes; the shell has an `h1`, a standing status region, a script that moves focus, title and URL with each view, and forwards a view's arguments; every editor text color reaches 4.5:1 and its border and focus ring 3:1 in both schemes (WCAG arithmetic from `ikigai-a11y`), with no `opacity` dimming; the query is visible without JavaScript | What the scripts do in a browser (the rows below); any rule not named here |
-| axe-core in Chrome over a running server (2026-10-15, and again 2026-11-02) | axe-core 4.10.3, playwright-core 1.63.0, Google Chrome 153.0.8010.54 (2026-10-15); the same axe and playwright in the installed Chrome (2026-11-02) | The index, the editor (empty, a SELECT table, ASK, an error) and the shell (a directory, a file, a refused repository), with the browse faces loaded from a mounted peer under the browse-only ceiling; light and dark color schemes; 1280 and 320 CSS px wide. Rules axe tags WCAG 2.0/2.1/2.2 A and AA, plus best-practice rules as advisories | The editor's highlighted query (axe cannot see behind the textarea overlay); states not opened (the explanation and pull-request views, the annotation form submitted, a 403 on a control); the read-only LAN posture |
-| Target-size regression probe (2026-11-02), `tests/browser/browse-target-size.cjs` | axe-core 4.10.3, Playwright 1.56.1, Chromium 141.0.7390.37 on Linux | Running shell and served CSS, with a seven-directory tree fixture replacing the mounted peer; light and dark at 1280 and 320 CSS px. Before: seven axe `target-size` failures, explain buttons 6.52 by 22.5 CSS px. After: no `target-size` failures, all seven 24 by 24 CSS px; no horizontal overflow; programmatic keyboard focus has a visible outline | Real mounted faces, other axe rules, other browsers, manual keyboard or assistive technology testing. This probe is run separately from CI; CI pins the minimum dimensions in the served CSS |
-| Keyboard and script probe in the same Chrome (2026-10-15, 2026-11-02) | as above | Tab order on the editor and its focus ring; the editor with JavaScript off; in the shell, Enter on a directory (where focus lands, the title and URL), then Back and Forward; a refused read, and what the status region says | Every other control and page |
-| Contrast arithmetic (one-off) | WCAG 2.x relative luminance | The editor's five syntax colors and its borders, in both schemes, against the editor background | Any color not named in `SPARQL_CSS` |
-| Horizontal scroll at 320 CSS px (same run) | as above | Whether any page scrolls sideways at 320 px | Zoom to 400% in a desktop window, text spacing |
+| Check | Result | Evidence |
+|---|---|---|
+| Every page names its language (`lang`) | Pass | `every_page_names_its_language` in `tests/http.rs`. Covers the index, the editor and the shell. Does not check that the language is right for a resource's own text. |
+| Index: viewport, a `<main>` landmark, long scopes that wrap | Pass | `the_index_reflows_and_has_a_main_landmark` in `tests/http.rs`. Checks the markup and the wrapping rule in the style; does not measure the rendered page at 320 CSS px. |
+| Editor: the query field has a visible label and the run shortcut is described in words | Pass | `the_query_field_is_labeled_and_its_shortcut_described` in `tests/http.rs`. Does not check what a screen reader says for the field. |
+| Editor: every text color reaches 4.5:1, the border and the focus ring 3:1, in light and dark, with no `opacity` dimming | Pass | `sparql::tests::the_editors_text_reaches_the_contrast_floor` and `sparql::tests::the_editors_boundary_and_focus_are_visible` in `src/sparql.rs`, using `ikigai-a11y` 0.4.0's WCAG 2.x contrast arithmetic. Covers the colors in `SPARQL_CSS` only; not the index, the shell, the browse faces or the syntax theme. |
+| Editor: the query is visible without JavaScript | Pass | `sparql::tests::the_query_is_visible_without_javascript` in `src/sparql.rs`. Checks the style; does not load the page with JavaScript off. |
+| Shell: an `h1`, and a script that moves focus to it and sets the title and URL with each view, forwarding a view's arguments | Pass | `the_shell_has_a_heading_and_keeps_place_across_views` and `the_shell_forwards_a_views_arguments` in `tests/http.rs`. Checks the markup and that the served script contains this behavior; does not run the script. |
+| Shell: a refusal is written into a standing `role="status"` region and shown as a note beside the control | Pass | `the_shell_announces_refusals_through_a_standing_region` and `browse_shell_shows_refusals_where_they_happen` in `tests/http.rs`. Checks the region is in the page from the start and the served script writes to it; does not run the script or check that anything is announced. |
+| Shell: buttons keep a minimum pointer target of 24 by 24 CSS px | Pass | `browse_buttons_keep_a_minimum_pointer_target` in `tests/http.rs`. Checks the rule in the served `browse.css`; does not measure rendered buttons. |
+| Shell: a 403 marks the refused control | Blocked | No test covers it, and no browser run since PR #25 opened a 403 on a control. What the code does is listed under "Known limitations". |
+| axe-core over a running server: the index, the editor (empty, a SELECT table, ASK, an error) and the shell (a directory, a file, a refused repository), light and dark, 1280 and 320 CSS px | Blocked | Not run for this review: no browser or Node.js was available (`node` not found) and CI does not run it. Historical: 2026-10-15 with axe-core 4.10.3, playwright-core 1.63.0 and Google Chrome 153.0.8010.54 on macOS, and 2026-11-02 with the same axe and playwright in the installed Chrome (version not recorded). The 2026-11-02 run reported no WCAG A or AA failure on the index or the editor; on the shell it reported the browse faces' findings listed under "Known limitations". axe cannot see the editor's highlighted query behind the textarea overlay. |
+| Target-size probe, `tests/browser/browse-target-size.cjs` | Blocked | Not run for this review: no Node.js was available, and CI does not run it. Historical: 2026-11-02 with axe-core 4.10.3, Playwright 1.56.1 and Chromium 141.0.7390.37 on Linux, with a seven-directory tree fixture standing in for the mounted peer: no `target-size` failures, all seven explain buttons 24 by 24 CSS px, no horizontal overflow at 1280 or 320 CSS px in either scheme, and a visible outline on programmatic focus. |
+| Scripted keyboard and script probe: tab order and focus ring in the editor, the editor with JavaScript off, Enter on a directory in the shell, then Back and Forward, a refused read | Blocked | Not run for this review: no browser was available. Historical: 2026-10-15 and 2026-11-02 in Chrome, as above. The 2026-11-02 run found focus moved to the new `h1`, the title and URL followed the directory, Back and Forward stayed in the shell, and a refused read the person asked for was written into the status region. |
+| No horizontal scroll at 320 CSS px | Blocked | Not run for this review: no browser was available. Historical: the axe runs of 2026-10-15 and 2026-11-02 above. |
+| Manual keyboard pass by a person | Blocked | No person has made a keyboard pass of any page. |
+| Zoom to 400% and text spacing | Blocked | Never run; no browser session was available for this review. |
+| Forced colors (high contrast) | Blocked | No page has been tried in a forced-colors mode. |
+| Other browser engines (Firefox, Safari) | Blocked | Never run; only Chrome and Chromium have been used. |
+| Screen reader | Blocked | No screen reader has been used on any page; no screen-reader session was available for this review. Whether the status region's refusals are announced is unknown. |
+| Screen magnifier | Blocked | No screen magnifier has been used on any page; no magnifier session was available for this review. |
+| Speech input | Blocked | No speech-input software has been used on any page; no speech-input session was available for this review. |
+| Switch access | Blocked | No switch-access software has been used on any page; no switch-access session was available for this review. |
+| Braille display | Blocked | No braille display has been used on any page; no braille display was available for this review. |
+| Clarity of the sample queries and refusal notes, and the shell's reading order with a face loaded | Blocked | Only a person can judge these, and no one has. |
 
-On 2026-10-15, on main at `cb7acf8`: `cargo test` passed (108 tests). On 2026-11-02, with the
-fixes of ledger item 1645: axe reported nothing on the index or the editor (empty and with a SELECT
-table) in either scheme at either width; on the shell (a directory) it reported the browse faces'
-`target-size`, `landmark-unique` and `heading-order` findings, listed below. In the shell, Enter on a
-directory moved focus to the new `h1`, set the title and URL to the directory, and Back and Forward
-moved between the two views inside the shell. A refused read the person asked for was written into
-the standing status region; a refusal of a part of a view that loads itself was shown but not
-announced. Every WCAG A or AA violation either run reported is listed under "Known limitations". In the
-dark scheme axe treats a page with no background color as white, which is not what Chrome paints
-(`color-scheme: light dark` gives a dark canvas, `rgb(18, 18, 18)`), so the dark runs were made
-with `html{background:Canvas}` added to the page: without it axe reported failures that are not
-on the screen.
+**ikigai-ui's per-kind accessibility criteria** (`urn:iki:ui:criterion:kind:{kind}:target:{target}`):
+this repository relies on none of them. It does not depend on `ikigai-ui` (see `Cargo.toml` and
+`Cargo.lock`); its pages are built in `src/serve.rs` and `src/sparql.rs`, and the browse faces
+come from `ikigai-browse`. No SEE check of those criteria is verified here, and no HEAR check
+runs (no screen-reader job runs yet).
 
-What only a person can judge (whether the sample queries and the refusal notes are clear, the
-reading order of the shell once a face is loaded, and how the editor behaves with a screen reader)
-has not been assessed.
+A note on the historical axe runs in the dark scheme: axe treats a page with no background color
+as white, which is not what Chrome paints (`color-scheme: light dark` gives a dark canvas,
+`rgb(18, 18, 18)`), so those runs were made with `html{background:Canvas}` added to the page;
+without it axe reported failures that are not on the screen.
 
 ## Browsers and assistive technology, as tested
 
-Only what has actually been run. This is not a list of what is supported.
+Only what has actually been run, and all of it historical: CI repeats none of it. This is not a
+list of what is supported.
 
 | Platform | Browser | Assistive technology | What | When |
 |---|---|---|---|---|
 | macOS | Google Chrome 153.0.8010.54 (driven by playwright-core 1.63.0) | none | axe-core 4.10.3 over the three pages and their states, light and dark, 1280 and 320 px; the keyboard probe | 2026-10-15 |
+| macOS | the installed Google Chrome (version not recorded), playwright-core 1.63.0 | none | axe-core 4.10.3 over the index, the editor and the shell; the keyboard probe | 2026-11-02 |
+| Linux | Chromium 141.0.7390.37 (Playwright 1.56.1) | none | `tests/browser/browse-target-size.cjs` | 2026-11-02 |
 
-**No screen reader, screen magnifier, speech-input or switch-access software has been used to test
-this repository.** No other browser engine (Firefox, Safari) has been run, and no page has been
-tried in a forced-colors (high contrast) mode.
+**No screen reader, screen magnifier, speech-input, switch-access software or braille display has
+been used to test this repository.** No other browser engine (Firefox, Safari) has been run, and no
+page has been tried in a forced-colors (high contrast) mode.
 
 ## Known limitations
 
@@ -125,6 +143,7 @@ tried in a forced-colors (high contrast) mode.
 | The tree face's "recent pull requests" heading is an `h4` straight under the shell's `h1` (axe `heading-order`, advisory) | browse faces (`ikigai-browse`) | Heading navigation shows a jump in levels | none needed to read it |
 | The run shortcut works only with JavaScript, so without it the hint is not shown | SPARQL editor, JavaScript off | none: the Run button submits the form | The Run button |
 | Whether a screen reader announces the refusal text written into the shell's standing status region has not been tested | browse shell | A refusal may go unannounced | The note is visible next to the control |
+| On a 403 the shell's script sets `aria-disabled="true"` on the refused control and, for a `<button>`, also `disabled`, which takes the button out of the tab order: a keyboard or screen-reader user can no longer reach it or its reason. ikigai-ui's refusal pattern (ikigai-ui PR 68) marks `aria-disabled` only and keeps the control focusable and inert. Found by reading `SHELL_JS` in `src/serve.rs` on 2026-11-12, not by testing | browse shell | The refused button disappears from keyboard navigation | The refusal note stays visible beside it |
 | The shell needs JavaScript: without it the page shows "loading" and nothing else | browse shell | No browsing without JavaScript | none: a resource's own URL (`/{uri}`) shows one view without the shell, but its controls need JavaScript too |
 | No assistive-technology testing at all; CI pins only the facts its tests name | everything | Unknown; a regression in anything else would not be caught | Report what you meet (below) |
 
@@ -134,8 +153,8 @@ No list like this is complete. Please report what you find.
 
 A change to anything in scope:
 
-1. runs `cargo test` (CI runs it, with fmt, clippy and docs, and all must pass); until an
-   accessibility check exists here, says in the pull request how the changed page was checked;
+1. runs `cargo test` (CI runs it, with fmt, clippy and docs, and all must pass), and says in the
+   pull request how the changed page was checked, as a `Check | Result | Evidence` table (below);
 2. keeps native semantics, adds ARIA only where HTML cannot say it, and keeps visible labels as
    the accessible names (SC 2.5.3);
 3. does not convey anything by color alone, and gives every new color a light and a dark value
@@ -152,12 +171,18 @@ For a change to a page's markup, style or script, include in the description:
 ```markdown
 ## Accessibility
 
-- What a user does differently, and which pages, states and color schemes it touches:
-- Automated: cargo test, and any axe run (version, browser, pages): pass / fail
-- By hand (keyboard, zoom, narrow screen), with browser and version, or "not done":
-- Assistive technology, with name and version, or "not tested":
-- Not tested, and known limitations:
+What a user does differently, and which pages, states and color schemes it touches:
+
+| Check | Result | Evidence |
+|---|---|---|
+| cargo test | Pass / Fail | the tests that cover the change |
+| axe-core in a browser | Pass / Fail / Blocked | version, browser and version, pages and states, or why it could not run |
+| Keyboard, zoom, narrow screen | Pass / Fail / Blocked | browser and version, or why it could not run |
+| Screen reader, magnifier, speech input, switch access, braille | Blocked unless run | name and version of each one used, or why it could not run |
 ```
+
+Keep every check nobody ran as Blocked, a screen reader included; never omit it or call it "not
+applicable". A historical run CI does not repeat is Blocked with its date, not Pass.
 
 ## Coding agents and automation
 
@@ -207,8 +232,9 @@ added, after a reported barrier is fixed, and before any conformance claim.
 | 2026-08-09 | Syntax colors from the kernel-served theme stylesheet, which follows the color scheme | PR #8 |
 | 2026-10-14 | A refused affordance says why, in a `role="status"` note beside the control; a 403 marks the control disabled | PR #25 |
 | 2026-10-15 | This file, with the first axe run and its findings | PR #27 |
-| 2026-11-02 | Fixed: `lang` on every page; a label for the query field; editor text, comment color, border and a focus ring at the contrast floors; the query visible without JavaScript; the shortcut described in words for the platform; the index's viewport, `<main>` and reflow at 320 px; in the shell an `h1`, focus, title and URL that follow each view (Back stays in the shell), and refusals announced through a standing status region. Found and listed: the faces' `target-size` and `heading-order` | ledger item 1645, this pull request |
-| 2026-11-02 | Fixed the shell button reset: minimum 24 by 24 CSS px and horizontal padding, including each tree row's explain control | ledger item 2919; targeted axe/browser probe described above |
+| 2026-11-02 | Fixed: `lang` on every page; a label for the query field; editor text, comment color, border and a focus ring at the contrast floors; the query visible without JavaScript; the shortcut described in words for the platform; the index's viewport, `<main>` and reflow at 320 px; in the shell an `h1`, focus, title and URL that follow each view (Back stays in the shell), and refusals announced through a standing status region. Found and listed: the faces' `target-size` and `heading-order` | PR #34 |
+| 2026-11-02 | Fixed the shell button reset: minimum 24 by 24 CSS px and horizontal padding, including each tree row's explain control | PR #35; the target-size probe above |
+| 2026-11-12 | Every check named here given a result (Pass, Fail or Blocked) with its evidence; historical browser runs marked Blocked with their dates; ikigai-ui's per-kind criteria stated as not used; the 403 `disabled` behavior listed as a known limitation | this pull request |
 
 ## References
 
