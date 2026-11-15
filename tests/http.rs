@@ -121,6 +121,7 @@ fn repo_list() -> FnEndpoint {
 fn erroring(kind: &'static str) -> FnEndpoint {
     FnEndpoint::new(kind, move |_inv| -> Result<Representation, Error> {
         Err(match kind {
+            "gone" => Error::Gone("retired".into()),
             "missing" => Error::NotFound("gone fishing".into()),
             "denied" => Error::Denied("not with that capability".into()),
             "conflict" => Error::Conflict("1,1 is taken — X played there".into()),
@@ -158,6 +159,20 @@ fn test_kernel() -> Kernel {
         // (the root-living-elsewhere case the index must still surface).
         .bind(Exact::new("urn:repo:beta:tree"), hello())
         .bind(Exact::new("urn:repo:folio:tree"), hello())
+        .bind(Exact::new("urn:gone"), erroring("gone"))
+        .bind(
+            Exact::new("urn:redirect"),
+            FnEndpoint::new("redirect", |inv| {
+                let status = ikigai_core::RedirectStatus::from_code(
+                    inv.inline_str("status").unwrap_or("303").parse().unwrap(),
+                )
+                .unwrap();
+                Ok(Representation::redirect(
+                    ikigai_core::Redirect::new(status, "https://example.org/café?q=hello%20world")
+                        .unwrap(),
+                ))
+            }),
+        )
         .bind(Exact::new("urn:missing"), erroring("missing"))
         .bind(Exact::new("urn:denied"), erroring("denied"))
         .bind(Exact::new("urn:asleep"), erroring("asleep"))
@@ -1393,4 +1408,41 @@ fn the_shell_announces_refusals_through_a_standing_region() {
         script.contains("getElementById('browse-announce')"),
         "script was: {script}"
     );
+}
+
+#[test]
+fn gone_answers_410_on_get_and_head() {
+    for method in ["GET", "HEAD"] {
+        let (status, _, body) = roundtrip(&format!(
+            "{method} /urn:gone HTTP/1.1\r\nHost: localhost\r\n\r\n"
+        ));
+        assert_eq!(status, 410, "{method}");
+        if method == "HEAD" {
+            assert!(body.is_empty());
+        }
+    }
+}
+
+#[test]
+fn typed_redirect_answers_its_status_and_uri_location() {
+    for code in [301, 302, 303, 307, 308] {
+        for path in [
+            format!("/urn:redirect?status={code}"),
+            format!("/k/source%20urn:redirect%20status={code}"),
+        ] {
+            let (status, headers, body) = get(&path);
+            assert_eq!(status, code, "{path}");
+            assert_eq!(
+                header(&headers, "location"),
+                Some("https://example.org/caf%C3%A9?q=hello%20world")
+            );
+            assert_eq!(
+                header(&headers, "content-type"),
+                Some("text/plain; charset=utf-8")
+            );
+            assert!(String::from_utf8(body)
+                .unwrap()
+                .contains("https://example.org/café?q=hello%20world"));
+        }
+    }
 }

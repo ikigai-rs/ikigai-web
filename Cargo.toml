@@ -59,7 +59,10 @@ repository = "https://github.com/ikigai-rs/ikigai-web"
 # `<0.2.0` under 0.x rules, so it could never reach this core. "0.2.0" is a caret floor that
 # admits every 0.2.x, and a CEILING again: `<0.3.0`. Core's types are in this crate's API,
 # so the move is this crate's 0.6.0.
-ikigai-core = "0.2.0"
+# 2026-11-15: move the ecosystem dependencies below to core 0.3 together.
+# Gone requires core >=0.3.1; ikigai-web 0.4.3 supplies its shared error_status
+# mapping and requires core >=0.3.2. The other moves keep one core type graph.
+ikigai-core = "0.3.2"
 # RemoteSpace/MountedRemote — the Resolver→Space adapters that let this process
 # compose the machine's peers (gonk, on a typical machine) behind IRI prefixes.
 #
@@ -71,14 +74,14 @@ ikigai-core = "0.2.0"
 #
 # ★ 2026-10-27 moved it to 0.2.1, its newest release, on core 0.2 (ledger #2261, #2362):
 # a 0.1 resolve links a 0.1 core, and the graph would carry two cores.
-ikigai-resolve = "0.2.1"
+ikigai-resolve = "0.4.0"
 # The IPC client transport: dial a Unix-socket peer (wire hello). Above the old
 # 0.1.13 floor, which was already the true minimum for its own reason: below it
 # a resolver never redials, so a peer restart left this process's mounted
 # namespace dead until the process itself restarted.
 #
 # 2026-10-27 moved it to 0.2.0, its newest release, on core 0.2 (ledger #2261, #2362).
-ikigai-ipc = "0.2.0"
+ikigai-ipc = "0.4.0"
 # `TurtleRenderer` — the Meta renderer `mounts::compose` injects. Core ships
 # none, and a kernel without one cannot render `urn:kernel:catalog`: this
 # server answered 500 on that route (a link its own index emits) until
@@ -87,7 +90,7 @@ ikigai-ipc = "0.2.0"
 #
 # 2026-10-27 moved it to 0.2.0 with core, the streams release (ledger #2261, #2362): the
 # old `0.1.68` pin meant `<0.2.0` under 0.x rules.
-ikigai-vocab = "0.2.0"
+ikigai-vocab = "0.3.0"
 # The door's two rules, from their ONE implementation in the ecosystem (ledger #1813):
 # `OriginCheck` (refuse a write another origin started) and `SecurityHeaders::html_door`
 # / `HTML_DOOR_CSP` (the page policy). This is the cli's inbound-HTTP transport library,
@@ -98,14 +101,14 @@ ikigai-vocab = "0.2.0"
 #
 # 2026-10-27 moved it to 0.2.0, its newest release and its first on core 0.2 (ledger
 # #2261, #2362). Still a CEILING: `^0.2.0` is `<0.3.0`.
-ikigai-web = "0.2.0"
+ikigai-web = "0.4.3"
 # `ikigai_fn::html`: the ecosystem's one HTML escaper and URL-segment encoder (ledger
 # #1813, FND-H), in place of the private `html_escape` and `urlencode` this crate used to
 # carry. 0.5.0 is the first release with the `html` module. A CEILING: `^0.5.0` is `<0.6.0`.
 #
 # 2026-10-27 moved it to 0.7.0, its newest release, on core 0.2 (ledger #2261, #2362), and
 # the one the `ikigai-web` 0.2.0 above requires. A CEILING: `^0.7.0` is `<0.8.0`.
-ikigai-fn = "0.7.0"
+ikigai-fn = "0.10.0"
 # The accept loop + per-connection tasks. Multi-thread because the forwarding
 # endpoints round-trip the wire SYNCHRONOUSLY (ikigai-resolve), each in-flight
 # request parks a worker thread.
@@ -145,7 +148,7 @@ libc = "0.2"
 #
 # 0.12.0 adds BODIES and BODY-INPUTS by default. The suite retains each kernel's
 # shared root to probe body methods; the library's core floor stays at 0.2.0.
-ikigai-conformance = "0.12.0"
+ikigai-conformance = "0.14.0"
 # `run_blocking` is the suite's own executor; the by-hand pins need one too.
 # (The peer half of the mount — a real Unix-socket kernel server — is
 # `ikigai-ipc::serve`, already a normal dependency for its client half.)
@@ -157,11 +160,11 @@ tempfile = "3"
 # shim in front of a real v8 server. Already in the graph via ikigai-ipc.
 #
 # 2026-10-27 moved it to 0.2.0, its newest release, on core 0.2 (ledger #2261, #2362).
-ikigai-wire = "0.2.0"
+ikigai-wire = "0.4.0"
 # `ratio` and `Rgba::parse`: the WCAG contrast arithmetic the editor's color tests check
 # against (`src/sparql.rs`, ledger #1645), from the ecosystem's one implementation of it
 # rather than a private copy. 0.4.0 is its release on core 0.2. A CEILING: `<0.5.0`.
-ikigai-a11y = "0.4.0"
+ikigai-a11y = "0.6.0"
 
 [[bin]]
 name = "ikigai-web"

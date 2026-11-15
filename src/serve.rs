@@ -13,7 +13,7 @@ use std::time::Duration;
 use ikigai_core::{
     ArgRef, Capability, Error, Expiry, Iri, Kernel, ReprType, Representation, Request, Verb,
 };
-use ikigai_fn::html::{attr, html_text};
+use ikigai_fn::html::{attr, html_text, url_reserved};
 use ikigai_web::{OriginCheck, SecurityHeaders, HTML_DOOR_CSP};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -317,6 +317,7 @@ fn host_refusal(face: &Face, req: &HttpRequest) -> Option<Resp> {
 /// would be waste. If the rule ever reads more, this is the line that must change with it.
 fn origin_refusal(origins: &OriginCheck, req: &HttpRequest) -> Option<ikigai_web::Refusal> {
     origins.check(&ikigai_web::HttpRequest {
+        raw_target: String::new(),
         method: req.method.clone(),
         path: String::new(),
         query: Vec::new(),
@@ -578,6 +579,10 @@ pub fn if_none_match_hits(header: &str, etag: &str) -> bool {
 /// `Vary: Accept` — collapsing to a bodyless `304` when the client already
 /// holds exactly this content.
 ///
+/// A typed redirect is sent with its status and URI-encoded `Location`, plus a
+/// plain-text explanation. Validators describe that explanation; a matching
+/// conditional request still gets a bodyless 304 without `Location`.
+///
 /// `Vary: Accept` because this face IS content-negotiated: one URL serves
 /// different bytes per `Accept`, and without the header a shared cache may hand
 /// a browser the Turtle face it stored for curl. `as=` selects a face too, but
@@ -590,6 +595,23 @@ pub fn if_none_match_hits(header: &str, etag: &str) -> bool {
 /// client was told not to store the body), but the alternative is a second
 /// rule about when a tag appears, and uniformity is worth more than the header.
 pub(crate) fn source_resp(req: &HttpRequest, repr: Representation) -> Resp {
+    // Only core decides whether the reserved representation is a redirect. In
+    // particular, ordinary JSON and malformed reserved bodies remain data.
+    let redirect = repr.as_redirect();
+    let repr = if let Some(redirect) = &redirect {
+        Representation::new(
+            ReprType::new("text/plain"),
+            format!(
+                "{} {}: {}\n",
+                redirect.status.code(),
+                reason(redirect.status.code()),
+                redirect.location
+            ),
+        )
+        .with_expiry(repr.expiry)
+    } else {
+        repr
+    };
     let etag = etag_of(&repr);
     let cache = cache_control(repr.expiry);
     let fresh = req
@@ -610,7 +632,7 @@ pub(crate) fn source_resp(req: &HttpRequest, repr: Representation) -> Resp {
             suppress_body: true,
         };
     }
-    Resp {
+    let mut resp = Resp {
         status: 200,
         headers: vec![
             ("Content-Type".to_string(), content_type(&repr.repr_type)),
@@ -620,24 +642,20 @@ pub(crate) fn source_resp(req: &HttpRequest, repr: Representation) -> Resp {
         ],
         body: repr.bytes,
         suppress_body: false,
+    };
+    if let Some(redirect) = redirect {
+        resp.status = redirect.status.code();
+        resp.headers.push((
+            "Location".to_string(),
+            url_reserved(redirect.location.as_str()),
+        ));
     }
+    resp
 }
 
 /// Map a kernel error onto the status its meaning deserves.
 pub fn status_of(error: &Error) -> u16 {
-    match error {
-        Error::Unresolved(_) | Error::NotFound(_) => 404,
-        Error::Denied(_) => 403,
-        Error::MissingArgument(_) | Error::InvalidArgument { .. } => 400,
-        // The state refuses the request (a taken slot, a write whose precondition
-        // does not hold). Always 409 here, never 412: this server evaluates no
-        // caller-stated precondition on a write — `If-None-Match` is read only on
-        // GET, for a 304 — so every Conflict it sees is the endpoint's own.
-        Error::Conflict(_) => 409,
-        Error::Unavailable(_) => 503,
-        Error::Timeout(_) => 504,
-        _ => 500,
-    }
+    ikigai_web::error_status(error)
 }
 
 /// The roots of the one write route v1 exposes: annotation minting (the bare
@@ -1460,16 +1478,27 @@ pub fn content_type(repr_type: &ikigai_core::ReprType) -> String {
 fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        301 => "Moved Permanently",
+        302 => "Found",
+        303 => "See Other",
         304 => "Not Modified",
+        307 => "Temporary Redirect",
+        308 => "Permanent Redirect",
         400 => "Bad Request",
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
         408 => "Request Timeout",
+        409 => "Conflict",
+        410 => "Gone",
         413 => "Payload Too Large",
         421 => "Misdirected Request",
+        422 => "Unprocessable Content",
+        429 => "Too Many Requests",
         431 => "Request Header Fields Too Large",
         500 => "Internal Server Error",
+        501 => "Not Implemented",
+        502 => "Bad Gateway",
         503 => "Service Unavailable",
         504 => "Gateway Timeout",
         _ => "",
@@ -1602,6 +1631,72 @@ mod tests {
         assert!(if_none_match_hits("\"b3:zzz\", \"b3:abc\"", tag));
         assert!(!if_none_match_hits("\"b3:zzz\"", tag));
         assert!(!if_none_match_hits("", tag));
+    }
+
+    fn read_request_fixture() -> HttpRequest {
+        HttpRequest {
+            method: "GET".into(),
+            path: "/urn:test".into(),
+            query: Vec::new(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn only_core_validated_redirects_set_location() {
+        use ikigai_core::REDIRECT_MEDIA_TYPE;
+        for (media_type, body) in [
+            (
+                "application/json",
+                r#"{"status":303,"location":"https://example.org/"}"#,
+            ),
+            (REDIRECT_MEDIA_TYPE, "not JSON"),
+            (
+                REDIRECT_MEDIA_TYPE,
+                r#"{"status":304,"location":"https://example.org/"}"#,
+            ),
+            (
+                REDIRECT_MEDIA_TYPE,
+                r#"{"status":303,"location":"/relative"}"#,
+            ),
+            (
+                REDIRECT_MEDIA_TYPE,
+                r#"{"status":303,"location":"https://example.org/\r\nInjected: value"}"#,
+            ),
+        ] {
+            let resp = source_resp(
+                &read_request_fixture(),
+                Representation::new(ReprType::new(media_type), body),
+            );
+            assert_eq!(resp.status, 200, "{body}");
+            assert!(!resp.headers.iter().any(|(name, _)| name == "Location"));
+            assert_eq!(resp.body, body.as_bytes());
+        }
+    }
+
+    #[test]
+    fn redirect_validators_describe_the_sent_body_and_preserve_expiry() {
+        use ikigai_core::{Redirect, RedirectStatus};
+        let answer = Representation::redirect(
+            Redirect::new(RedirectStatus::SeeOther, "https://example.org/").unwrap(),
+        )
+        .cacheable();
+        let mut req = read_request_fixture();
+        let resp = source_resp(&req, answer.clone());
+        assert_eq!(resp.status, 303);
+        let expected = Representation::new(ReprType::new("text/plain"), resp.body.clone());
+        let etag = etag_of(&expected);
+        assert!(resp.headers.contains(&("ETag".into(), etag.clone())));
+        assert!(resp
+            .headers
+            .contains(&("Cache-Control".into(), "public, no-cache".into())));
+        req.headers.push(("if-none-match".into(), etag));
+        let fresh = source_resp(&req, answer);
+        assert_eq!(fresh.status, 304);
+        assert!(fresh.body.is_empty());
+        assert!(fresh.suppress_body);
+        assert!(!fresh.headers.iter().any(|(name, _)| name == "Location"));
     }
 
     #[test]
