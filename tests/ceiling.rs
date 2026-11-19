@@ -11,7 +11,7 @@
 //!
 //! The peer here is a small stand-in with the same shape: a ledger listing that requires
 //! `urn:cap:ledger:read:default`, a browse tree that requires a `urn:cap:browse:read:` grant,
-//! a repo-list facade that requires `urn:cap:exec:git`, and a `urn:sparql:select` whose default
+//! a repo-list facade that requires `urn:cap:exec:read:git`, and a `urn:sparql:select` whose default
 //! dataset is the UNION of the graphs the caller's capability may read (gonk's rule), with
 //! `graph=` refused for a graph the caller cannot read. Before the ceiling,
 //! [`a_lan_face_with_the_browse_only_ceiling_serves_browse_and_not_the_ledger`] failed on its
@@ -109,7 +109,7 @@ fn repo_list() -> FnEndpoint {
         Description::new("repo-list").action(
             ActionSpec::new(Verb::Source)
                 .output("text/plain")
-                .requires("urn:cap:exec:git"),
+                .requires("urn:cap:exec:read:git"),
         ),
     )
 }
