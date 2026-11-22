@@ -332,7 +332,16 @@ fn origin_refusal(origins: &OriginCheck, req: &HttpRequest) -> Option<ikigai_web
 async fn handle(face: Arc<Face>, mut stream: TcpStream) -> std::io::Result<()> {
     let parsed = tokio::time::timeout(READ_BUDGET, read_request(&mut stream)).await;
     let resp = match parsed {
-        Ok(Ok(req)) => respond(&face, req).await,
+        Ok(Ok(req)) => {
+            // RFC 9110 §9.3.2: no content in an answer to HEAD, whatever route answered it.
+            // The IRI route maps HEAD to Exists and is bodyless already; the index, the
+            // pages, the assets and every refusal answered HEAD with the body a GET gets.
+            // `Content-Length` still describes that body, as the RFC allows.
+            let head = req.method == "HEAD";
+            let mut resp = respond(&face, req).await;
+            resp.suppress_body |= head;
+            resp
+        }
         Ok(Err(status)) => error_resp(status, "malformed request"),
         Err(_elapsed) => error_resp(408, "request read timed out"),
     };
