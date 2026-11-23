@@ -1446,3 +1446,28 @@ fn typed_redirect_answers_its_status_and_uri_location() {
         }
     }
 }
+
+/// RFC 9110 §9.3.2: a server MUST NOT send content in a response to HEAD. The
+/// IRI route maps HEAD to Exists and answers bodyless; every other route (the
+/// index, the pages, the assets, the refusals) must hold to the same framing.
+#[test]
+fn head_never_carries_a_body_on_any_route() {
+    for path in [
+        "/",
+        "/browse/urn:hello",
+        "/browse.css",
+        "/htmx.min.js",
+        "/sparql",
+        "/meta/urn:hello",
+        "/k/source%20urn:hello",
+        "/nowhere",
+    ] {
+        let (status, _, body) =
+            roundtrip(&format!("HEAD {path} HTTP/1.1\r\nHost: localhost\r\n\r\n"));
+        assert!(
+            body.is_empty(),
+            "HEAD {path} answered {status} with a {}-byte body",
+            body.len()
+        );
+    }
+}
